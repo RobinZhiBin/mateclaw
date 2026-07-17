@@ -22,6 +22,7 @@ import vip.mate.agent.graph.plan.state.PlanStateAccessor;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.DirectToolOutput;
 import vip.mate.agent.graph.state.MateClawStateKeys;
+import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.context.RuntimeContextInjector;
 import vip.mate.agent.graph.executor.ToolExecutionExecutor;
@@ -195,6 +196,9 @@ public class StepExecutionNode implements NodeAction {
                         .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
         String runtimeModelName = state.value(MateClawStateKeys.RUNTIME_MODEL_NAME, "");
         String runtimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
+        SourceEvidenceLedger evidenceLedger = state
+                .<SourceEvidenceLedger>value(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER)
+                .orElse(SourceEvidenceLedger.empty());
 
         if (stepIndex >= steps.size()) {
             log.warn("[StepExecution] stepIndex {} >= steps.size() {}, skipping", stepIndex, steps.size());
@@ -356,10 +360,12 @@ public class StepExecutionNode implements NodeAction {
                             // RFC-052: pass the directOutputs collector so that an
                             // approved direct tool's full content is captured here
                             // (instead of leaking into the next LLM round).
-                            ToolResponseMessage.ToolResponse response = executor.executePreApproved(
+                            ToolExecutionExecutor.PreApprovedExecutionResult replayResult =
+                                    executor.executePreApprovedWithEvidence(
                                     toolCall, storedArguments, events, conversationId, workspaceBasePath,
                                     stepDirectOutputs);
-                            toolResponses.add(response);
+                            toolResponses.add(replayResult.response());
+                            evidenceLedger = evidenceLedger.merge(replayResult.rawEvidenceLedger());
                             preApprovedPayload = ""; // 只消费一次
                         } else {
                             // 非预批准工具走正常执行器
@@ -367,6 +373,7 @@ public class StepExecutionNode implements NodeAction {
                                     List.of(toolCall), conversationId, agentId, false, "", workspaceBasePath, chatOrigin);
                             toolResponses.addAll(execResult.responses());
                             events.addAll(execResult.events());
+                            evidenceLedger = evidenceLedger.merge(execResult.rawEvidenceLedger());
                             if (execResult.hasDirectOutputs()) {
                                 stepDirectOutputs.addAll(execResult.directOutputs());
                             }
@@ -383,6 +390,7 @@ public class StepExecutionNode implements NodeAction {
                             allToolCalls, conversationId, agentId, false, "", workspaceBasePath, chatOrigin);
                     toolResponses.addAll(execResult.responses());
                     events.addAll(execResult.events());
+                    evidenceLedger = evidenceLedger.merge(execResult.rawEvidenceLedger());
                     if (execResult.hasDirectOutputs()) {
                         stepDirectOutputs.addAll(execResult.directOutputs());
                     }
@@ -450,6 +458,7 @@ public class StepExecutionNode implements NodeAction {
                         .currentPhase("awaiting_approval")
                         .contentStreamed(true)
                         .thinkingStreamed(!stepThinking.isEmpty())
+                        .put(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, evidenceLedger)
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -486,6 +495,7 @@ public class StepExecutionNode implements NodeAction {
                         .contentStreamed(false)  // 由 StateGraphPlanExecuteAgent 经 finalSummary 推送
                         .put(MateClawStateKeys.RETURN_DIRECT_TRIGGERED, true)
                         .put(MateClawStateKeys.DIRECT_TOOL_OUTPUTS, List.copyOf(stepDirectOutputs))
+                        .put(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, evidenceLedger)
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -536,6 +546,7 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
+                        .put(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, evidenceLedger)
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -594,6 +605,7 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
+                        .put(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, evidenceLedger)
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -605,7 +617,9 @@ public class StepExecutionNode implements NodeAction {
             return PlanStateAccessor.output()
                     .currentStepResult(shortError)
                     .currentPhase("plan_aborted")
+                    .finalSummary(shortError)
                     .contentStreamed(false)
+                    .put(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, evidenceLedger)
                     .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                             stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                     .events(events)
@@ -650,6 +664,7 @@ public class StepExecutionNode implements NodeAction {
                 .currentPhase("step_completed")
                 .contentStreamed(true)
                 .thinkingStreamed(!stepThinking.isEmpty())
+                .put(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, evidenceLedger)
                 .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                         stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                 .events(events)

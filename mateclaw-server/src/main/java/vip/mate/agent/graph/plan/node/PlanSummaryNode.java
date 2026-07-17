@@ -99,7 +99,11 @@ public class PlanSummaryNode implements NodeAction {
             log.error("[PlanSummary] Failed to summarize plan {}: {}", planId, e.getMessage(), e);
             String fallbackSummary = buildFallbackSummary(goal, completedResults);
             planningService.markPlanFailed(planId, "汇总阶段失败：" + truncate(e.getMessage(), 100));
-            return Map.of(PlanStateKeys.FINAL_SUMMARY, fallbackSummary);
+            return PlanStateAccessor.output()
+                    .finalSummary(fallbackSummary)
+                    .contentStreamed(false)
+                    .thinkingStreamed(false)
+                    .build();
         }
     }
 

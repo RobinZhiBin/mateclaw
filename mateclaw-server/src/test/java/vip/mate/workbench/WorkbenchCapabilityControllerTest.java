@@ -54,6 +54,21 @@ class WorkbenchCapabilityControllerTest {
     }
 
     @Test
+    void blankServerConfigurationRemainsFailClosed() throws Exception {
+        WorkbenchCapabilityService service = new WorkbenchCapabilityService(
+                agentMapper, bindingService, availableToolService);
+        MockMvc unavailable = standaloneSetup(new WorkbenchCapabilityController(
+                new WorkbenchServiceKeyAuth("  "), service)).build();
+
+        unavailable.perform(get("/api/v1/workbench/agents/7/capabilities")
+                        .header("X-Workbench-Service-Key", "any-presented-key")
+                        .header("X-Workspace-Id", "1"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.data.errorCode").value("WORKBENCH_SERVICE_FORBIDDEN"))
+                .andExpect(jsonPath("$.data.retryable").value(false));
+    }
+
+    @Test
     void wrongWorkspaceAndMissingAgentHaveSameSafeResponse() {
         AgentEntity otherWorkspace = agent(7L, 2L);
         when(agentMapper.selectById(7L)).thenReturn(otherWorkspace);

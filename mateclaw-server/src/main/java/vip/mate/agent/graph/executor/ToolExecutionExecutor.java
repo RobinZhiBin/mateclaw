@@ -667,6 +667,15 @@ public class ToolExecutionExecutor {
             List<GraphEventPublisher.GraphEvent> events,
             String conversationId, String workspaceBasePath,
             List<DirectToolOutput> directOutputs) {
+        return executePreApprovedWithEvidence(toolCall, storedArguments, events,
+                conversationId, workspaceBasePath, directOutputs).response();
+    }
+
+    public PreApprovedExecutionResult executePreApprovedWithEvidence(
+            AssistantMessage.ToolCall toolCall, String storedArguments,
+            List<GraphEventPublisher.GraphEvent> events,
+            String conversationId, String workspaceBasePath,
+            List<DirectToolOutput> directOutputs) {
         String toolName = resolveToolName(toolCall.name());
         String callArguments = storedArguments != null ? storedArguments : toolCall.arguments();
 
@@ -681,13 +690,15 @@ public class ToolExecutionExecutor {
             if (redirect != null) {
                 events.add(GraphEventPublisher.toolComplete(
                         toolCall.id(), toolName, redirect.response(), true));
-                return new ToolResponseMessage.ToolResponse(
+                ToolResponseMessage.ToolResponse response = new ToolResponseMessage.ToolResponse(
                         toolCall.id(), toolName, redirect.response());
+                return preApprovedResult(response, redirect.response());
             }
             String msg = skillAwareNotFoundMessage(toolName);
             log.warn("[ToolExecutor] Pre-approved {}", msg);
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
-            return new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, msg);
+            return preApprovedResult(
+                    new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, msg), null);
         }
 
         try {
@@ -701,6 +712,7 @@ public class ToolExecutionExecutor {
                     .withConversationId(conversationId)
                     .withWorkspace(null, workspaceBasePath);
             String result = callback.call(callArguments, replayOrigin.toToolContext());
+            String rawResult = result;
             int rawLen = result != null ? result.length() : 0;
 
             // RFC-052: pre-approved tool may itself be returnDirect — in that
@@ -717,8 +729,8 @@ public class ToolExecutionExecutor {
                 }
                 events.add(GraphEventPublisher.toolDirectResult(
                         toolCall.id(), toolName, fullResult));
-                return new ToolResponseMessage.ToolResponse(
-                        toolCall.id(), toolName, DIRECT_TOOL_PLACEHOLDER);
+                return preApprovedResult(new ToolResponseMessage.ToolResponse(
+                        toolCall.id(), toolName, DIRECT_TOOL_PLACEHOLDER), fullResult);
             }
 
             // Raw-first spill, inline truncate as fallback. Symmetric with the
@@ -733,16 +745,28 @@ public class ToolExecutionExecutor {
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, result, true));
             // Append the card-rendering directive to the LLM-facing response only,
             // leaving the broadcast tool-result panel unchanged.
-            return new ToolResponseMessage.ToolResponse(
+            ToolResponseMessage.ToolResponse response = new ToolResponseMessage.ToolResponse(
                     toolCall.id(), toolName, withProductCardDirective(toolName, result != null ? result : ""));
+            return preApprovedResult(response, rawResult);
         } catch (Exception e) {
             log.error("[ToolExecutor] Pre-approved tool {} failed: {}", toolName, e.getMessage());
             String safeError = isReturnDirect(callback)
                     ? "Tool execution failed (details withheld per returnDirect policy)"
                     : "Tool execution failed: " + e.getMessage();
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, safeError, false));
-            return new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, safeError);
+            return preApprovedResult(
+                    new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, safeError), null);
         }
+    }
+
+    private static PreApprovedExecutionResult preApprovedResult(
+            ToolResponseMessage.ToolResponse response, String rawResult) {
+        SourceEvidenceLedger ledger = rawResult == null
+                ? SourceEvidenceLedger.empty()
+                : SourceEvidenceLedger.fromToolResponses(List.of(
+                        new ToolResponseMessage.ToolResponse(
+                                response.id(), response.name(), rawResult)));
+        return new PreApprovedExecutionResult(response, ledger);
     }
 
     /**
@@ -1493,6 +1517,10 @@ public class ToolExecutionExecutor {
             return new GuardDecision(false, true, response, pendingId);
         }
     }
+
+    public record PreApprovedExecutionResult(
+            ToolResponseMessage.ToolResponse response,
+            SourceEvidenceLedger rawEvidenceLedger) {}
 
     /**
      * 工具执行结果

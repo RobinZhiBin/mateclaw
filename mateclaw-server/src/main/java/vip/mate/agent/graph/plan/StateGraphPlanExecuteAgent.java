@@ -16,8 +16,10 @@ import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.StructuredStreamCapable;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.MateClawStateKeys;
+import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.planning.service.PlanningService;
+import vip.mate.workbench.evidence.FinalAnswerEvents;
 import vip.mate.workspace.conversation.ConversationService;
 
 import java.util.*;
@@ -148,6 +150,9 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         AtomicInteger finalReasoningTokens = new AtomicInteger(0);
         AtomicReference<String> finalModelName = new AtomicReference<>("");
         AtomicReference<String> finalProviderId = new AtomicReference<>("");
+        AtomicReference<SourceEvidenceLedger> latestEvidenceLedger = new AtomicReference<>(
+                (SourceEvidenceLedger) inputs.getOrDefault(
+                        MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, SourceEvidenceLedger.empty()));
         // Root conversation for this turn — used to roll delegated sub-agent
         // token usage into the turn's _usage_final and to clear the accumulator
         // on terminal so an errored turn never leaks an entry.
@@ -155,6 +160,8 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         // 去重：记录上一次已持久化的 step 结果和 thinking，防止 PlanSummaryNode 重复 emit 上一步内容
         AtomicReference<String> lastPersistedStepResult = new AtomicReference<>("");
         AtomicReference<String> lastPersistedStepThinking = new AtomicReference<>("");
+        AtomicReference<String> lastPersistedFinalSummary = new AtomicReference<>("");
+        AtomicReference<String> lastPersistedFinalThinking = new AtomicReference<>("");
 
         return BaseAgent.routingStartupDelta(inputs).concatWith(compiledGraph.stream(inputs, config)
                 .flatMapIterable(output -> {
@@ -165,7 +172,9 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                     if (newStart < allEvents.size()) {
                         for (int i = newStart; i < allEvents.size(); i++) {
                             var event = allEvents.get(i);
-                            deltas.add(AgentService.StreamDelta.event(event.type(), event.data()));
+                            if (!GraphEventPublisher.EVENT_SOURCE_REFS.equals(event.type())) {
+                                deltas.add(AgentService.StreamDelta.event(event.type(), event.data()));
+                            }
                         }
                         sentEventCount.set(allEvents.size());
                     }
@@ -198,15 +207,23 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                     // 2b. 最终汇总
                     output.state().<String>value(PlanStateKeys.FINAL_SUMMARY)
                             .filter(s -> !s.isEmpty())
-                            .ifPresent(summary -> deltas.add(contentAlreadyStreamed
-                                    ? AgentService.StreamDelta.persistOnly(summary, null)
-                                    : new AgentService.StreamDelta(summary, null)));
+                            .filter(s -> !s.equals(lastPersistedFinalSummary.get()))
+                            .ifPresent(summary -> {
+                                deltas.add(contentAlreadyStreamed
+                                        ? AgentService.StreamDelta.persistOnly(summary, null)
+                                        : new AgentService.StreamDelta(summary, null));
+                                lastPersistedFinalSummary.set(summary);
+                            });
 
                     output.state().<String>value(PlanStateKeys.FINAL_SUMMARY_THINKING)
                             .filter(s -> !s.isEmpty())
-                            .ifPresent(thinking -> deltas.add(thinkingAlreadyStreamed
-                                    ? AgentService.StreamDelta.persistOnly(null, thinking)
-                                    : new AgentService.StreamDelta(null, thinking)));
+                            .filter(s -> !s.equals(lastPersistedFinalThinking.get()))
+                            .ifPresent(thinking -> {
+                                deltas.add(thinkingAlreadyStreamed
+                                        ? AgentService.StreamDelta.persistOnly(null, thinking)
+                                        : new AgentService.StreamDelta(null, thinking));
+                                lastPersistedFinalThinking.set(thinking);
+                            });
 
                     // 3. 更新最新累计 token usage
                     finalPromptTokens.set(output.state().value(MateClawStateKeys.PROMPT_TOKENS, 0));
@@ -216,6 +233,9 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                     finalReasoningTokens.set(output.state().value(MateClawStateKeys.REASONING_TOKENS, 0));
                     finalModelName.set(output.state().value(MateClawStateKeys.RUNTIME_MODEL_NAME, ""));
                     finalProviderId.set(output.state().value(MateClawStateKeys.RUNTIME_PROVIDER_ID, ""));
+                    latestEvidenceLedger.set(output.state()
+                            .<SourceEvidenceLedger>value(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER)
+                            .orElse(latestEvidenceLedger.get()));
 
                     return deltas;
                 })
@@ -243,7 +263,10 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                         ));
                     }
                     return null;
-                }).flatMapMany(d -> d != null ? Flux.just(d) : Flux.empty())))
+                }).flatMapMany(d -> d != null ? Flux.just(d) : Flux.empty()))
+                .concatWith(Flux.defer(() -> Flux.fromIterable(FinalAnswerEvents.terminal(
+                                latestEvidenceLedger.get(), GraphEventPublisher.finishReason("normal")))
+                        .map(event -> AgentService.StreamDelta.event(event.type(), event.data())))))
                 .doOnComplete(() -> setState(AgentState.IDLE))
                 .doOnError(e -> {
                     log.error("[{}] Plan-Execute stream error: {}", agentName, e.getMessage());
@@ -332,6 +355,7 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         inputs.put(MateClawStateKeys.CACHE_READ_TOKENS, 0);
         inputs.put(MateClawStateKeys.CACHE_WRITE_TOKENS, 0);
         inputs.put(MateClawStateKeys.REASONING_TOKENS, 0);
+        inputs.put(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, SourceEvidenceLedger.empty());
         inputs.put(MateClawStateKeys.RUNTIME_MODEL_NAME, modelName != null ? modelName : "");
         inputs.put(MateClawStateKeys.RUNTIME_PROVIDER_ID, runtimeProviderId != null ? runtimeProviderId : "");
         inputs.put(MateClawStateKeys.TRACE_ID, UUID.randomUUID().toString().substring(0, 8));
