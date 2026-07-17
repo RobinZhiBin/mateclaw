@@ -129,6 +129,8 @@ springdoc:
 
 # MateClaw 自定义配置
 mateclaw:
+  workbench:
+    service-key: ${MATECLAW_WORKBENCH_SERVICE_KEY:}
   server:
     # Public base URL used to build absolute download links for tool-generated
     # files (e.g. https://mateclaw.example.com). Leave empty to fall back to the

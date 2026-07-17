@@ -95,6 +95,7 @@ public class SecurityConfig {
                     // KB Open API: authenticated by KbOpenApiAuthFilter (API key),
                     // not JWT — must be permitAll so the filter is the sole gatekeeper (R1).
                     "/api/v1/open/kb/**",
+                    "/api/v1/workbench/**",
                     "/api/v1/talk/ws",
                     // Desktop local-tool tunnel — the handshake interceptor
                     // authenticates the ?token= query param itself, so the

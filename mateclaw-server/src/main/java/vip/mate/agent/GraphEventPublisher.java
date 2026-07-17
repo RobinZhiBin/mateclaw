@@ -2,6 +2,7 @@ package vip.mate.agent;
 
 import com.alibaba.cloud.ai.graph.NodeOutput;
 import vip.mate.agent.graph.state.MateClawStateKeys;
+import vip.mate.workbench.evidence.SafeSourceRef;
 
 import java.util.List;
 import java.util.Map;
@@ -44,6 +45,7 @@ public final class GraphEventPublisher {
      * on the assistant content.
      */
     public static final String EVENT_FINISH_REASON = "finish_reason";
+    public static final String EVENT_SOURCE_REFS = "source_refs";
 
     /**
      * User-facing recovery affordances offered after a turn ends in a
@@ -213,6 +215,11 @@ public final class GraphEventPublisher {
         data.put("renderAs", "assistant_message");
         data.put("timestamp", ts);
         return new GraphEvent(EVENT_TOOL_DIRECT_RESULT, Map.copyOf(data), ts);
+    }
+
+    public static GraphEvent sourceRefs(List<SafeSourceRef> items) {
+        long ts = System.currentTimeMillis();
+        return new GraphEvent(EVENT_SOURCE_REFS, Map.of("items", List.copyOf(items)), ts);
     }
 
     public static GraphEvent perfSummary(String phase, Map<String, Object> metrics) {

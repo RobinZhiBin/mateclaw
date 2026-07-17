@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 import vip.mate.workspace.conversation.model.MessageEntity;
+import vip.mate.workbench.evidence.SafeSourceRef;
+import vip.mate.workbench.evidence.SafeSourceRefMetadata;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -34,6 +36,8 @@ public class MessageVO {
      * 前端无需额外 parse。
      */
     private Object metadata;
+
+    private List<SafeSourceRef> sourceRefs = List.of();
 
     /** Prompt tokens 消耗 */
     private Integer promptTokens;
@@ -82,6 +86,14 @@ public class MessageVO {
         vo.setCreateTime(entity.getCreateTime());
         vo.setUpdateTime(entity.getUpdateTime());
         vo.setContentParts(contentParts);
+        return vo;
+    }
+
+    public static MessageVO fromExternal(
+            MessageEntity entity, List<MessageContentPart> contentParts, String renderedContent) {
+        MessageVO vo = from(entity, contentParts, renderedContent);
+        vo.setMetadata(Collections.emptyMap());
+        vo.setSourceRefs(SafeSourceRefMetadata.decode(MAPPER, entity.getMetadata()));
         return vo;
     }
 
