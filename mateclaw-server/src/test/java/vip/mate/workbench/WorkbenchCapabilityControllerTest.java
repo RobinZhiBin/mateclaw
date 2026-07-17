@@ -11,14 +11,12 @@ import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.common.result.R;
-import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.service.AvailableToolService;
 import vip.mate.workbench.controller.WorkbenchCapabilityController;
 import vip.mate.workbench.model.WorkbenchCapabilityManifest;
 import vip.mate.workbench.service.WorkbenchCapabilityService;
 import vip.mate.workbench.service.WorkbenchServiceKeyAuth;
 
-import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -90,8 +88,8 @@ class WorkbenchCapabilityControllerTest {
         when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
         when(bindingService.getEffectiveToolNames(7L)).thenReturn(Set.of(
                 "extract_document_text", "execute_sql", "browser_use"));
-        when(availableToolService.listAvailable()).thenReturn(List.of(
-                available("extract_document_text"), available("execute_sql"), available("browser_use")));
+        when(availableToolService.listHealthyRuntimeNames()).thenReturn(Set.of(
+                "extract_document_text", "execute_sql", "browser_use"));
 
         ResponseEntity<R<?>> response =
                 controller.capabilities(7L, "dedicated-secret", "1");
@@ -114,7 +112,7 @@ class WorkbenchCapabilityControllerTest {
     void requiresTheSameBoundToolToBeHealthy() {
         when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
         when(bindingService.getEffectiveToolNames(7L)).thenReturn(Set.of("extract_document_text"));
-        when(availableToolService.listAvailable()).thenReturn(List.of(available("read_file")));
+        when(availableToolService.listHealthyRuntimeNames()).thenReturn(Set.of("read_file"));
 
         WorkbenchCapabilityManifest manifest = manifest(
                 controller.capabilities(7L, "dedicated-secret", "1"));
@@ -125,10 +123,24 @@ class WorkbenchCapabilityControllerTest {
     }
 
     @Test
+    void delegationWithoutFileFunctionsRemainsNotConfigured() {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
+        when(bindingService.getEffectiveToolNames(7L)).thenReturn(Set.of("delegateToAgent"));
+        when(availableToolService.listHealthyRuntimeNames()).thenReturn(Set.of("read_file"));
+
+        WorkbenchCapabilityManifest manifest = manifest(
+                controller.capabilities(7L, "dedicated-secret", "1"));
+
+        assertThat(manifest.fileAnalysis().available()).isFalse();
+        assertThat(manifest.fileAnalysis().healthy()).isFalse();
+        assertThat(manifest.fileAnalysis().reasonCode()).isEqualTo("NOT_CONFIGURED");
+    }
+
+    @Test
     void nullAvailabilitySignalFailsClosed() {
         when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
         when(bindingService.getEffectiveToolNames(7L)).thenReturn(Set.of("extract_document_text"));
-        when(availableToolService.listAvailable()).thenReturn(null);
+        when(availableToolService.listHealthyRuntimeNames()).thenReturn(null);
 
         WorkbenchCapabilityManifest manifest = manifest(
                 controller.capabilities(7L, "dedicated-secret", "1"));
@@ -138,10 +150,26 @@ class WorkbenchCapabilityControllerTest {
     }
 
     @Test
+    void availabilityFailureFreezesEveryCapability() {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
+        when(bindingService.getEffectiveToolNames(7L)).thenReturn(Set.of(
+                "extract_document_text", "execute_sql", "browser_use"));
+        when(availableToolService.listHealthyRuntimeNames())
+                .thenThrow(new IllegalStateException("registry unavailable"));
+
+        WorkbenchCapabilityManifest manifest = manifest(
+                controller.capabilities(7L, "dedicated-secret", "1"));
+
+        assertThat(manifest.fileAnalysis().reasonCode()).isEqualTo("PERMISSION_UNVERIFIED");
+        assertThat(manifest.structuredDataAnalysis().reasonCode()).isEqualTo("PERMISSION_UNVERIFIED");
+        assertThat(manifest.authorizedFetch().reasonCode()).isEqualTo("PERMISSION_UNVERIFIED");
+    }
+
+    @Test
     void httpRouteEnforcesHeadersAndReturnsOnlyThreeByThreeShape() throws Exception {
         when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
         when(bindingService.getEffectiveToolNames(7L)).thenReturn(Set.of("extract_document_text"));
-        when(availableToolService.listAvailable()).thenReturn(List.of(available("extract_document_text")));
+        when(availableToolService.listHealthyRuntimeNames()).thenReturn(Set.of("extract_document_text"));
 
         String path = "/api/v1/workbench/agents/7/capabilities";
         mockMvc.perform(get(path).header("X-Workspace-Id", "1"))
@@ -200,7 +228,4 @@ class WorkbenchCapabilityControllerTest {
         return agent;
     }
 
-    private static AvailableToolDTO available(String name) {
-        return AvailableToolDTO.builder().name(name).available(true).stale(false).build();
-    }
 }

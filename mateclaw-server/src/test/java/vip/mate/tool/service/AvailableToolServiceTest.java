@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -191,6 +192,56 @@ class AvailableToolServiceTest {
         List<AvailableToolDTO> out = service.listAvailable();
         assertNotNull(out);
         assertEquals(0, out.size());
+    }
+
+    @Test
+    @DisplayName("healthy runtime names use builtin callbacks and connected MCP callbacks")
+    void healthyRuntimeNamesUseRegisteredCallbacks() {
+        ToolEntity readFile = builtin("ReadFileTool", "Read files");
+        readFile.setRuntimeNames(List.of("read_file"));
+        when(toolService.listEnabledTools()).thenReturn(List.of(readFile));
+        McpServerEntity connected = connectedServer(42L, "github", "create_issue");
+        McpServerEntity disconnected = connectedServer(43L, "stale", "stale_tool");
+        disconnected.setLastStatus("disconnected");
+        when(mcpServerService.listEnabled()).thenReturn(List.of(connected, disconnected));
+
+        Set<String> names = service.listHealthyRuntimeNames();
+
+        assertEquals(Set.of(
+                "read_file", McpToolNameResolver.prefixedName(42L, "create_issue")), names);
+        assertFalse(names.contains("ReadFileTool"));
+        assertFalse(names.contains(McpToolNameResolver.prefixedName(43L, "stale_tool")));
+    }
+
+    @Test
+    @DisplayName("missing runtime aliases never promote a builtin DB class name")
+    void missingRuntimeNamesFailClosed() {
+        when(toolService.listEnabledTools()).thenReturn(List.of(
+                builtin("ReadFileTool", "Read files")));
+
+        Set<String> names = service.listHealthyRuntimeNames();
+
+        assertTrue(names.isEmpty());
+    }
+
+    @Test
+    @DisplayName("runtime health does not return a partial list when MCP availability fails")
+    void runtimeHealthPropagatesMcpAvailabilityFailure() {
+        ToolEntity readFile = builtin("ReadFileTool", "Read files");
+        readFile.setRuntimeNames(List.of("read_file"));
+        when(toolService.listEnabledTools()).thenReturn(List.of(readFile));
+        when(mcpServerService.listEnabled()).thenThrow(new IllegalStateException("registry unavailable"));
+
+        assertThrows(IllegalStateException.class, service::listHealthyRuntimeNames);
+    }
+
+    @Test
+    @DisplayName("runtime health fails closed when an enabled MCP cache is malformed")
+    void runtimeHealthRejectsMalformedMcpCache() {
+        when(mcpServerService.listEnabled()).thenReturn(List.of(
+                serverWithCacheJson(42L, "github", "{not valid json}")));
+
+        assertThrows(IllegalStateException.class, service::listHealthyRuntimeNames);
     }
 
     private static ToolEntity builtin(String name, String description) {

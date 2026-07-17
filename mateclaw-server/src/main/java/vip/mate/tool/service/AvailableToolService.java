@@ -13,7 +13,9 @@ import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.model.ToolEntity;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Aggregator behind {@code GET /api/v1/tools/available}.
@@ -60,6 +62,35 @@ public class AvailableToolService {
         return out;
     }
 
+    public Set<String> listHealthyRuntimeNames() {
+        Set<String> names = new LinkedHashSet<>();
+        List<ToolEntity> enabledTools = toolService.listEnabledTools();
+        if (enabledTools == null) {
+            throw new IllegalStateException("Enabled tool registry is unavailable");
+        }
+        for (ToolEntity tool : enabledTools) {
+            if (tool == null || tool.getRuntimeNames() == null) continue;
+            tool.getRuntimeNames().stream()
+                    .filter(name -> name != null && !name.isBlank())
+                    .forEach(names::add);
+        }
+
+        List<AvailableToolDTO> mcpTools = new ArrayList<>();
+        List<McpServerEntity> servers = mcpServerService.listEnabled();
+        if (servers == null) {
+            throw new IllegalStateException("Enabled MCP registry is unavailable");
+        }
+        for (McpServerEntity server : servers) {
+            appendOneMcpServer(mcpTools, server, true);
+        }
+        mcpTools.stream()
+                .filter(tool -> tool.isAvailable() && !tool.isStale())
+                .map(AvailableToolDTO::getName)
+                .filter(name -> name != null && !name.isBlank())
+                .forEach(names::add);
+        return Set.copyOf(names);
+    }
+
     private void appendBuiltinTools(List<AvailableToolDTO> out) {
         for (ToolEntity t : toolService.listEnabledTools()) {
             if (t == null || t.getName() == null || t.getName().isBlank()) continue;
@@ -85,7 +116,7 @@ public class AvailableToolService {
 
         for (McpServerEntity s : servers) {
             try {
-                appendOneMcpServer(out, s);
+                appendOneMcpServer(out, s, false);
             } catch (Exception e) {
                 log.warn("AvailableToolService: skipping MCP server {} due to: {}",
                         s.getId(), e.getMessage());
@@ -93,8 +124,9 @@ public class AvailableToolService {
         }
     }
 
-    private void appendOneMcpServer(List<AvailableToolDTO> out, McpServerEntity server) {
-        List<CachedTool> cached = parseCache(server.getToolsCacheJson());
+    private void appendOneMcpServer(List<AvailableToolDTO> out, McpServerEntity server,
+                                    boolean failOnMalformedCache) {
+        List<CachedTool> cached = parseCache(server.getToolsCacheJson(), failOnMalformedCache);
         if (cached.isEmpty()) {
             return;
         }
@@ -158,10 +190,10 @@ public class AvailableToolService {
     /**
      * Parse the {@code tools_cache_json} column written by
      * {@link vip.mate.tool.mcp.service.McpServerService}. Returns an empty
-     * list when the column is null/blank/malformed — the picker can render
-     * a server with no tools just as well as one with tools.
+     * list when the column is null/blank, and also for malformed picker data
+     * when strict health validation is not requested.
      */
-    private static List<CachedTool> parseCache(String json) {
+    private static List<CachedTool> parseCache(String json, boolean failOnMalformed) {
         if (json == null || json.isBlank()) {
             return List.of();
         }
@@ -177,6 +209,9 @@ public class AvailableToolService {
             }
             return out;
         } catch (Exception e) {
+            if (failOnMalformed) {
+                throw new IllegalStateException("Malformed MCP tools cache", e);
+            }
             log.debug("AvailableToolService: failed to parse tools_cache_json: {}", e.getMessage());
             return List.of();
         }
