@@ -1,5 +1,6 @@
 package vip.mate.channel.webchat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import reactor.core.publisher.Flux;
 import vip.mate.MateClawApplication;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.model.AgentEntity;
+import vip.mate.workbench.evidence.SafeSourceRef;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -217,6 +219,18 @@ class WebChatStreamE2ETest {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    private HttpResponse<String> getMessages(String visitorId, String visitorToken) throws Exception {
+        String query = "?visitorId=" + java.net.URLEncoder.encode(visitorId, StandardCharsets.UTF_8);
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port
+                        + "/api/v1/channels/webchat/sessions/messages" + query))
+                .timeout(HTTP_TIMEOUT)
+                .header("X-MC-Key", API_KEY)
+                .header("X-MC-Visitor-Token", visitorToken)
+                .GET().build();
+        return http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
     // ==================== tests ====================
 
     @Test
@@ -289,6 +303,127 @@ class WebChatStreamE2ETest {
         assertThat(row.get("completion_tokens")).isEqualTo(5);
         assertThat(row.get("runtime_model")).isEqualTo("mock-model");
         assertThat(row.get("runtime_provider")).isEqualTo("mock-provider");
+    }
+
+    @Test
+    @DisplayName("source_refs SSE payload is persisted and returned unchanged by visitor history")
+    void sourceRefsRoundTripThroughHistory() throws Exception {
+        SafeSourceRef ref = new SafeSourceRef(
+                "wiki", "operating-guide", "Operating Guide", "Runbook · page 2", null, 1);
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta("Grounded answer.", null),
+                        new AgentService.StreamDelta(null, null, "source_refs",
+                                Map.of("items", List.of(ref), "chunkId", "secret-chunk"), false)));
+
+        String visitorId = "vE2E-sources";
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"" + visitorId + "\"}"));
+        SseEvent sourceEvent = events.stream()
+                .filter(event -> "source_refs".equals(event.name)).findFirst().orElseThrow();
+        assertThat(events.stream().filter(event -> "source_refs".equals(event.name))).hasSize(1);
+        int contentIndex = events.indexOf(events.stream()
+                .filter(event -> "content_delta".equals(event.name)).reduce((a, b) -> b).orElseThrow());
+        int sourceIndex = events.indexOf(sourceEvent);
+        int doneIndex = events.indexOf(events.stream()
+                .filter(event -> "done".equals(event.name)).findFirst().orElseThrow());
+        assertThat(contentIndex).isLessThan(sourceIndex);
+        assertThat(sourceIndex).isLessThan(doneIndex);
+
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        SseEvent meta = events.stream().filter(event -> "meta".equals(event.name)).findFirst().orElseThrow();
+        String visitorToken = mapper.readTree(meta.data).path("visitorToken").asText();
+        HttpResponse<String> historyResponse = getMessages(visitorId, visitorToken);
+        assertThat(historyResponse.statusCode()).isEqualTo(200);
+
+        JsonNode history = mapper.readTree(historyResponse.body());
+        JsonNode assistant = null;
+        for (JsonNode message : history.path("data")) {
+            if ("assistant".equals(message.path("role").asText())) assistant = message;
+        }
+        assertThat(assistant).isNotNull();
+        JsonNode eventItems = mapper.readTree(sourceEvent.data).path("items");
+        assertThat(assistant.path("sourceRefs")).isEqualTo(eventItems);
+        assertThat(assistant.path("metadata").size()).isZero();
+        assertThat(historyResponse.body()).doesNotContain("secret-chunk", "chunkId");
+
+        String conversationId = WebChatController.deriveConversationId(API_KEY, visitorId, null);
+        String metadata = jdbc.queryForObject(
+                "SELECT metadata FROM mate_message WHERE conversation_id = ? AND role = 'assistant'",
+                String.class, conversationId);
+        JsonNode stored = mapper.readTree(metadata);
+        if (stored.isTextual()) stored = mapper.readTree(stored.asText());
+        assertThat(stored.fieldNames()).toIterable().containsExactly("sourceRefs");
+        assertThat(stored.path("sourceRefs")).isEqualTo(eventItems);
+    }
+
+    @Test
+    @DisplayName("an accepted empty source_refs list remains explicit in storage and history")
+    void emptySourceRefsRoundTripThroughHistory() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta("Ungrounded answer.", null),
+                        new AgentService.StreamDelta(null, null, "source_refs",
+                                Map.of("items", List.of()), false)));
+
+        String visitorId = "vE2E-empty-sources";
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"" + visitorId + "\"}"));
+        SseEvent sourceEvent = events.stream()
+                .filter(event -> "source_refs".equals(event.name)).findFirst().orElseThrow();
+        assertThat(new com.fasterxml.jackson.databind.ObjectMapper().readTree(sourceEvent.data).path("items"))
+                .isEmpty();
+
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String visitorToken = mapper.readTree(events.stream()
+                .filter(event -> "meta".equals(event.name)).findFirst().orElseThrow().data)
+                .path("visitorToken").asText();
+        JsonNode history = mapper.readTree(getMessages(visitorId, visitorToken).body());
+        JsonNode assistant = null;
+        for (JsonNode message : history.path("data")) {
+            if ("assistant".equals(message.path("role").asText())) assistant = message;
+        }
+        assertThat(assistant).isNotNull();
+        assertThat(assistant.path("sourceRefs")).isEmpty();
+        assertThat(assistant.path("metadata").size()).isZero();
+
+        String metadata = jdbc.queryForObject(
+                "SELECT metadata FROM mate_message WHERE conversation_id = ? AND role = 'assistant'",
+                String.class, WebChatController.deriveConversationId(API_KEY, visitorId, null));
+        JsonNode stored = mapper.readTree(metadata);
+        if (stored.isTextual()) stored = mapper.readTree(stored.asText());
+        assertThat(stored.fieldNames()).toIterable().containsExactly("sourceRefs");
+        assertThat(stored.path("sourceRefs")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("malformed source_refs terminates with a fixed error and is not persisted")
+    void malformedSourceRefsTerminateSafely() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta("Grounded answer.", null),
+                        new AgentService.StreamDelta(null, null, "source_refs",
+                                Map.of("items", List.of(Map.of(
+                                        "kind", "wiki", "sourceId", "safe-id",
+                                        "title", "/srv/private/page.md", "locator", "Intro", "order", 1))),
+                                false)));
+
+        String visitorId = "vE2E-bad-sources";
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"" + visitorId + "\"}"));
+
+        SseEvent error = events.stream().filter(event -> "error".equals(event.name))
+                .findFirst().orElseThrow();
+        assertThat(error.data).contains("WORKBENCH_SOURCE_REFS_INVALID")
+                .contains("Source references are invalid")
+                .doesNotContain("/srv/private", "page.md");
+        assertThat(events.stream().map(event -> event.name))
+                .doesNotContain("source_refs", "done");
+        assertThat(countAssistantMessages(
+                WebChatController.deriveConversationId(API_KEY, visitorId, null))).isZero();
     }
 
     @Test

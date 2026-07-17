@@ -10,6 +10,7 @@ import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.common.text.MarkdownNormalizer;
 import vip.mate.tool.document.GeneratedFileCache;
+import vip.mate.workbench.evidence.FinalAnswerEvents;
 
 import java.util.List;
 import java.util.Map;
@@ -88,8 +89,8 @@ public class FinalAnswerNode implements NodeAction {
                 var builder = MateClawStateAccessor.output()
                         .finalAnswer(assembled)
                         .finishReason(FinishReason.RETURN_DIRECT)
-                        .events(List.of(GraphEventPublisher.finishReason(
-                                FinishReason.RETURN_DIRECT.getValue())));
+                        .events(FinalAnswerEvents.terminal(accessor.sourceEvidenceLedger(),
+                                GraphEventPublisher.finishReason(FinishReason.RETURN_DIRECT.getValue())));
                 if (!preservedThinking.isEmpty()) {
                     builder.finalThinking(preservedThinking);
                 }
@@ -112,8 +113,8 @@ public class FinalAnswerNode implements NodeAction {
                     .finishReason(FinishReason.NORMAL)
                     .contentStreamed(true)
                     .thinkingStreamed(true)
-                    .events(List.of(GraphEventPublisher.finishReason(
-                            FinishReason.NORMAL.getValue())));
+                    .events(FinalAnswerEvents.terminal(accessor.sourceEvidenceLedger(),
+                            GraphEventPublisher.finishReason(FinishReason.NORMAL.getValue())));
             if (!preservedThinking.isEmpty()) {
                 builder.finalThinking(preservedThinking);
             }
@@ -204,11 +205,10 @@ public class FinalAnswerNode implements NodeAction {
         // report affordances next to the red "[错误] ..." bubble — without
         // this, fatal errors leave the user staring at error text with no
         // way to recover short of retyping the whole prompt.
-        List<GraphEventPublisher.GraphEvent> events =
-                new java.util.ArrayList<>(2);
-        events.add(GraphEventPublisher.finishReason(finishReason.getValue()));
+        List<GraphEventPublisher.GraphEvent> terminalEvents = new java.util.ArrayList<>(2);
+        terminalEvents.add(GraphEventPublisher.finishReason(finishReason.getValue()));
         if (finishReason == FinishReason.ERROR_FALLBACK) {
-            events.add(GraphEventPublisher.feedback(
+            terminalEvents.add(GraphEventPublisher.feedback(
                     "ERROR_FALLBACK",
                     finalAnswer,
                     List.of("retry", "regenerate", "report")));
@@ -227,7 +227,8 @@ public class FinalAnswerNode implements NodeAction {
                 // signal. APPEND-strategy on PENDING_EVENTS means this
                 // composes safely with any earlier events upstream nodes
                 // attached.
-                .events(events);
+                .events(FinalAnswerEvents.terminal(accessor.sourceEvidenceLedger(),
+                        terminalEvents.toArray(GraphEventPublisher.GraphEvent[]::new)));
 
         if (!finalThinking.isEmpty()) {
             builder.finalThinking(finalThinking);

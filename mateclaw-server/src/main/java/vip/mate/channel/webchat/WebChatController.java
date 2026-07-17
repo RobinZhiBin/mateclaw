@@ -42,6 +42,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -211,6 +212,7 @@ public class WebChatController {
                 // Pattern mirrors ChatController: always accumulate, only broadcast when the
                 // delta is not a persistence-only echo of content already streamed by inner nodes.
                 StringBuilder assistantReply = new StringBuilder();
+                WebChatSourceRefs sourceRefs = new WebChatSourceRefs(objectMapper);
                 // Token usage + model attribution: capture _usage_final event emitted at stream end
                 final int[] usage = {0, 0, 0, 0, 0}; // [prompt, completion, cacheRead, cacheWrite, reasoning]
                 final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
@@ -247,7 +249,7 @@ public class WebChatController {
                             // indicator (phase), tool execution badges (tool_start/end),
                             // plan-execute checklist (plan). See docs/zh/webchat.md.
                             if (delta.isEvent()) {
-                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData());
+                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData(), sourceRefs);
                             }
                             if (delta.content() != null && !delta.content().isEmpty()) {
                                 assistantReply.append(delta.content());
@@ -268,24 +270,30 @@ public class WebChatController {
                                 if (!reply.isBlank()) {
                                     conversationService.saveMessage(
                                             conversationId, "assistant", reply, List.of(),
-                                            "completed", usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
+                                            "completed", usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], sourceRefs.metadataJson());
                                 }
+                            } catch (WebChatSourceRefs.InvalidSourceRefsException invalidSourceRefs) {
+                                throw invalidSourceRefs;
+                            } catch (Exception persistErr) {
+                                sourceRefs.failIfPersistenceIsRequired();
+                                log.warn("[WebChat] Failed to persist assistant reply: {}",
+                                        persistErr.getMessage());
+                            }
+                            try {
                                 completionPublisher.publish(
                                         resolvedAgentId, conversationId, message, reply, "webchat", webchatOwnerKey);
-                            } catch (Exception persistErr) {
-                                log.warn("[WebChat] Failed to persist assistant reply / publish event: {}",
-                                        persistErr.getMessage());
+                            } catch (Exception publishErr) {
+                                log.warn("[WebChat] Failed to publish completion event: {}", publishErr.getMessage());
                             }
                             streamTracker.broadcast(conversationId, "done", "{\"status\":\"completed\"}");
                             streamTracker.complete(conversationId);
                         })
                         .doOnError(e -> {
-                            log.error("[WebChat] Stream error: {}", e.getMessage());
-                            streamTracker.broadcast(conversationId, "error",
-                                    "{\"message\":" + escapeJson(e.getMessage()) + "}");
+                            broadcastVisitorStreamError(conversationId, e);
                             streamTracker.complete(conversationId);
+                            emitter.complete();
                         })
-                        .subscribe();
+                        .subscribe(ignored -> {}, ignored -> {});
                 // Bind the subscription's Disposable so requestStop() (invoked by
                 // POST /sessions/stop) can actually dispose the Flux and interrupt
                 // the LLM stream. Without this, stopRequested is set but the underlying
@@ -1277,7 +1285,8 @@ public class WebChatController {
                 // tool here can mislead the LLM on fallthrough).
                 String replayPrompt = "继续执行已批准的工具调用。";
                 StringBuilder assistantReply = new StringBuilder();
-                final int[] usage = {0, 0};
+                WebChatSourceRefs sourceRefs = new WebChatSourceRefs(objectMapper);
+                final int[] usage = {0, 0, 0, 0, 0};
                 final String[] modelInfo = {null, null};
 
                 streamTracker.broadcast(conversationId, "message_start",
@@ -1300,7 +1309,7 @@ public class WebChatController {
                                 if (provider != null) modelInfo[1] = provider.toString();
                             }
                             if (delta.isEvent()) {
-                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData());
+                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData(), sourceRefs);
                             }
                             if (delta.content() != null && !delta.content().isEmpty()) {
                                 assistantReply.append(delta.content());
@@ -1321,9 +1330,12 @@ public class WebChatController {
                                 if (!reply.isBlank()) {
                                     conversationService.saveMessage(
                                             conversationId, "assistant", reply, List.of(),
-                                            "completed", usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
+                                            "completed", usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], sourceRefs.metadataJson());
                                 }
+                            } catch (WebChatSourceRefs.InvalidSourceRefsException invalidSourceRefs) {
+                                throw invalidSourceRefs;
                             } catch (Exception persistErr) {
+                                sourceRefs.failIfPersistenceIsRequired();
                                 log.warn("[WebChat] approve replay persist failed: {}", persistErr.getMessage());
                             }
                             streamTracker.broadcast(conversationId, "done",
@@ -1331,12 +1343,11 @@ public class WebChatController {
                             streamTracker.complete(conversationId);
                         })
                         .doOnError(e -> {
-                            log.error("[WebChat] approve replay stream error: {}", e.getMessage());
-                            streamTracker.broadcast(conversationId, "error",
-                                    "{\"message\":" + escapeJson(e.getMessage()) + "}");
+                            broadcastVisitorStreamError(conversationId, e);
                             streamTracker.complete(conversationId);
+                            emitter.complete();
                         })
-                        .subscribe();
+                        .subscribe(ignored -> {}, ignored -> {});
                 streamTracker.setDisposable(conversationId, disposable);
             } catch (Exception e) {
                 log.error("[WebChat] approve failed for {}: {}", conversationId, e.getMessage());
@@ -1837,8 +1848,21 @@ public class WebChatController {
      * <p>Backward compat: visitors / SDKs that don't know these event types
      * silently ignore them per the SSE spec.
      */
-    private void forwardVisitorEvent(String conversationId, String eventType, Map<String, Object> data) {
-        if (eventType == null || data == null) return;
+    private void forwardVisitorEvent(String conversationId, String eventType, Map<String, Object> data,
+                                     WebChatSourceRefs sourceRefs) {
+        if (eventType == null) return;
+        if (!"source_refs".equals(eventType) && data == null) return;
+        Optional<WebChatSourceRefs.VisitorEvent> safeSourceEvent = sourceRefs.accept(eventType, data);
+        if (safeSourceEvent.isPresent()) {
+            WebChatSourceRefs.VisitorEvent event = safeSourceEvent.orElseThrow();
+            try {
+                streamTracker.broadcast(conversationId, event.name(),
+                        objectMapper.writeValueAsString(event.payload()));
+            } catch (Exception e) {
+                throw new WebChatSourceRefs.InvalidSourceRefsException();
+            }
+            return;
+        }
         Map<String, Object> payload;
         String sseName;
         switch (eventType) {
@@ -1885,6 +1909,19 @@ public class WebChatController {
             log.debug("[WebChat] Failed to serialize visitor event {} for {}: {}",
                     eventType, conversationId, e.getMessage());
         }
+    }
+
+    private void broadcastVisitorStreamError(String conversationId, Throwable error) {
+        if (error instanceof WebChatSourceRefs.InvalidSourceRefsException) {
+            log.warn("[WebChat] Rejected invalid source_refs contract for {}", conversationId);
+            streamTracker.broadcast(conversationId, "error",
+                    "{\"code\":\"WORKBENCH_SOURCE_REFS_INVALID\","
+                            + "\"message\":\"Source references are invalid\"}");
+            return;
+        }
+        log.error("[WebChat] Stream error: {}", error.getMessage());
+        streamTracker.broadcast(conversationId, "error",
+                "{\"message\":" + escapeJson(error.getMessage()) + "}");
     }
 
     private String escapeJson(String value) {

@@ -1050,7 +1050,7 @@ public class ConversationService {
                             p.setPath(null);
                         }
                     });
-                    return MessageVO.from(message, parts, renderMessageContent(message, false));
+                    return MessageVO.fromExternal(message, parts, renderMessageContent(message, false));
                 })
                 .toList();
     }

@@ -360,13 +360,14 @@ public record SourceEvidenceLedger(
             recordWikiArray(root.path("pages"), builder);
             String title = root.path("title").asText("");
             String rawTitle = root.path("rawTitle").asText("");
+            String slug = root.path("slug").asText("");
             if (!title.isBlank()) {
                 builder.wikiPageTitle(title);
-                builder.wikiCitation(new WikiCitation(1, "", title, "", null));
+                builder.wikiCitation(new WikiCitation(1, "", title, "", null, slug));
             }
             if (!rawTitle.isBlank()) {
                 builder.wikiPageTitle(rawTitle);
-                builder.wikiCitation(new WikiCitation(1, "", rawTitle, "", null));
+                builder.wikiCitation(new WikiCitation(1, "", rawTitle, "", null, slug));
             }
         } catch (Exception ignored) {
         }
@@ -383,6 +384,7 @@ public record SourceEvidenceLedger(
             String chunkId = node.path("chunkId").asText("");
             String section = node.path("section").asText("");
             Integer pageNumber = node.hasNonNull("pageNumber") ? node.path("pageNumber").asInt() : null;
+            String slug = node.path("slug").asText("");
             if (!title.isBlank()) {
                 builder.wikiPageTitle(title);
             }
@@ -390,7 +392,7 @@ public record SourceEvidenceLedger(
                 builder.wikiChunkId(chunkId);
             }
             if (!title.isBlank() || !chunkId.isBlank()) {
-                builder.wikiCitation(new WikiCitation(index, chunkId, title, section, pageNumber));
+                builder.wikiCitation(new WikiCitation(index, chunkId, title, section, pageNumber, slug));
             }
             ordinal++;
         }
@@ -479,13 +481,19 @@ public record SourceEvidenceLedger(
     }
 
     public record WikiCitation(int index, String chunkId, String title,
-                               String section, Integer pageNumber) implements Serializable {
+                               String section, Integer pageNumber, String slug) implements Serializable {
+        public WikiCitation(int index, String chunkId, String title,
+                            String section, Integer pageNumber) {
+            this(index, chunkId, title, section, pageNumber, "");
+        }
+
         WikiCitation normalized() {
             return new WikiCitation(index,
                     chunkId == null ? "" : chunkId.trim(),
                     title == null ? "" : title.trim(),
                     section == null ? "" : section.trim(),
-                    pageNumber);
+                    pageNumber,
+                    slug == null ? "" : slug.trim());
         }
 
         String sourceLine() {
