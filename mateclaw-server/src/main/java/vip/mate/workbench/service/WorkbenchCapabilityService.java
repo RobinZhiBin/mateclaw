@@ -4,19 +4,17 @@ import org.springframework.stereotype.Service;
 import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
-import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.service.AvailableToolService;
 import vip.mate.workbench.model.WorkbenchCapabilityManifest;
 import vip.mate.workbench.model.WorkbenchCapabilityManifest.CapabilityState;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
 @Service
 public class WorkbenchCapabilityService {
     private static final Set<String> FILE_TOOLS = Set.of(
-            "extract_document_text", "extract_pdf_text", "extract_word_text", "read_file");
+            "extract_document_text", "extract_pdf_text", "extract_docx_text", "read_file");
     private static final Set<String> STRUCTURED_DATA_TOOLS = Set.of(
             "execute_sql", "query_datasource");
     private static final Set<String> FETCH_TOOLS = Set.of("web_search", "browser_use");
@@ -42,21 +40,15 @@ public class WorkbenchCapabilityService {
         if (!Boolean.TRUE.equals(agent.getEnabled())) return Optional.of(agentDisabledManifest());
 
         Set<String> effective;
-        List<AvailableToolDTO> available;
+        Set<String> healthy;
         try {
             effective = bindingService.getEffectiveToolNames(agentId);
-            available = availableToolService.listAvailable();
+            healthy = availableToolService.listHealthyRuntimeNames();
         } catch (Exception ignored) {
             return Optional.of(permissionUnverifiedManifest());
         }
         if (effective == null) return Optional.of(notConfiguredManifest());
-        if (available == null) return Optional.of(permissionUnverifiedManifest());
-
-        Set<String> healthy = available.stream()
-                .filter(tool -> tool != null && tool.isAvailable() && !tool.isStale())
-                .map(AvailableToolDTO::getName)
-                .filter(name -> name != null && !name.isBlank())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (healthy == null) return Optional.of(permissionUnverifiedManifest());
 
         CapabilityState file = fileState(effective, healthy);
         CapabilityState structured = authorizationState(effective, healthy, STRUCTURED_DATA_TOOLS);
