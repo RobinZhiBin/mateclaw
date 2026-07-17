@@ -53,6 +53,10 @@ final class WebChatSourceRefs {
         }
     }
 
+    void requireAccepted() {
+        if (!accepted) throw new InvalidSourceRefsException();
+    }
+
     void failIfPersistenceIsRequired() {
         if (accepted) throw new InvalidSourceRefsException();
     }

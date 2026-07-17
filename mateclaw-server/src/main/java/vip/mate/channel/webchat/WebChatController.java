@@ -267,6 +267,7 @@ public class WebChatController {
                         .doOnComplete(() -> {
                             String reply = assistantReply.toString();
                             try {
+                                sourceRefs.requireAccepted();
                                 if (!reply.isBlank()) {
                                     conversationService.saveMessage(
                                             conversationId, "assistant", reply, List.of(),
@@ -1327,6 +1328,7 @@ public class WebChatController {
                         .doOnComplete(() -> {
                             String reply = assistantReply.toString();
                             try {
+                                sourceRefs.requireAccepted();
                                 if (!reply.isBlank()) {
                                     conversationService.saveMessage(
                                             conversationId, "assistant", reply, List.of(),

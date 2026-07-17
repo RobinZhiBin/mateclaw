@@ -215,15 +215,10 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             return BaseAgent.routingStartupDelta(inputs).concatWith(compiledGraph.stream(inputs, config)
                     .flatMapIterable(output -> {
                         List<AgentService.StreamDelta> deltas = new ArrayList<>();
-                        List<GraphEventPublisher.GraphEvent> allEvents = GraphEventPublisher.extractEvents(output);
-                        int newStart = sentEventCount.get();
-                        if (newStart < allEvents.size()) {
-                            for (int i = newStart; i < allEvents.size(); i++) {
-                                var event = allEvents.get(i);
-                                deltas.add(AgentService.StreamDelta.event(event.type(), event.data()));
-                            }
-                            sentEventCount.set(allEvents.size());
-                        }
+                        GraphStreamEventOrder.EventBatch events =
+                                GraphStreamEventOrder.partitionNewEvents(output, sentEventCount.get());
+                        sentEventCount.set(events.nextEventCount());
+                        deltas.addAll(events.beforeContent());
 
                         boolean contentAlreadyStreamed = output.state().value(CONTENT_STREAMED, false);
                         boolean thinkingAlreadyStreamed = output.state().value(THINKING_STREAMED, false);
@@ -269,6 +264,7 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                                     ? AgentService.StreamDelta.persistOnly(null, thinking)
                                     : new AgentService.StreamDelta(null, thinking));
                         }
+                        deltas.addAll(events.afterContent());
 
                         finalPromptTokens.set(output.state().value(PROMPT_TOKENS, 0));
                         finalCompletionTokens.set(output.state().value(COMPLETION_TOKENS, 0));
@@ -384,16 +380,10 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             return BaseAgent.routingStartupDelta(inputs).concatWith(compiledGraph.stream(inputs, config)
                     .flatMapIterable(output -> {
                         List<AgentService.StreamDelta> deltas = new ArrayList<>();
-                        // 1. 提取所有累积的事件，只发送新增部分
-                        List<GraphEventPublisher.GraphEvent> allEvents = GraphEventPublisher.extractEvents(output);
-                        int newStart = sentEventCount.get();
-                        if (newStart < allEvents.size()) {
-                            for (int i = newStart; i < allEvents.size(); i++) {
-                                var event = allEvents.get(i);
-                                deltas.add(AgentService.StreamDelta.event(event.type(), event.data()));
-                            }
-                            sentEventCount.set(allEvents.size());
-                        }
+                        GraphStreamEventOrder.EventBatch events =
+                                GraphStreamEventOrder.partitionNewEvents(output, sentEventCount.get());
+                        sentEventCount.set(events.nextEventCount());
+                        deltas.addAll(events.beforeContent());
 
                         // 2. 内容始终通过 StreamDelta 发给 Accumulator 用于持久化
                         //    已由 NodeStreamingChatHelper 广播过的标记 persistOnly，避免前端收到重复 content_delta
@@ -441,6 +431,7 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                                     ? AgentService.StreamDelta.persistOnly(null, thinking)
                                     : new AgentService.StreamDelta(null, thinking));
                         }
+                        deltas.addAll(events.afterContent());
 
                         // 3. 更新最新累计 token usage
                         finalPromptTokens.set(output.state().value(PROMPT_TOKENS, 0));

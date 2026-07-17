@@ -59,6 +59,8 @@ class WebChatSourceRefsTest {
     void distinguishesAcceptedEmptyListFromLegacyMissingEvent() throws Exception {
         WebChatSourceRefs legacy = new WebChatSourceRefs(mapper);
         assertThat(legacy.metadataJson()).isEqualTo("{}");
+        assertThatThrownBy(legacy::requireAccepted)
+                .isInstanceOf(WebChatSourceRefs.InvalidSourceRefsException.class);
 
         WebChatSourceRefs acceptedEmpty = new WebChatSourceRefs(mapper);
         assertThat(acceptedEmpty.accept("source_refs", Map.of("items", List.of())))
@@ -66,6 +68,7 @@ class WebChatSourceRefsTest {
                 .isEqualTo(Map.of("items", List.of()));
         assertThat(mapper.readTree(acceptedEmpty.metadataJson()))
                 .isEqualTo(mapper.readTree("{\"sourceRefs\":[]}"));
+        acceptedEmpty.requireAccepted();
         assertThatThrownBy(acceptedEmpty::failIfPersistenceIsRequired)
                 .isInstanceOf(WebChatSourceRefs.InvalidSourceRefsException.class);
     }

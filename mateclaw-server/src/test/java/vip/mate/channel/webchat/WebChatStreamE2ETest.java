@@ -1,6 +1,11 @@
 package vip.mate.channel.webchat;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.alibaba.cloud.ai.graph.CompiledGraph;
+import com.alibaba.cloud.ai.graph.KeyStrategy;
+import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
+import com.alibaba.cloud.ai.graph.StateGraph;
+import com.alibaba.cloud.ai.graph.action.AsyncNodeAction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -9,12 +14,18 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.test.context.TestPropertySource;
 import reactor.core.publisher.Flux;
 import vip.mate.MateClawApplication;
 import vip.mate.agent.AgentService;
+import vip.mate.agent.graph.plan.StateGraphPlanExecuteAgent;
+import vip.mate.agent.graph.plan.state.PlanStateKeys;
+import vip.mate.agent.graph.state.MateClawStateKeys;
+import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.agent.model.AgentEntity;
-import vip.mate.workbench.evidence.SafeSourceRef;
+import vip.mate.planning.service.PlanningService;
+import vip.mate.workspace.conversation.ConversationService;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -30,12 +41,15 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * End-to-end HTTP coverage of {@code POST /api/v1/channels/webchat/stream} (epic #355 PR 5).
@@ -231,6 +245,35 @@ class WebChatStreamE2ETest {
         return http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     }
 
+    private static Flux<AgentService.StreamDelta> realPlanGraphStream(
+            String summary, SourceEvidenceLedger ledger) throws Exception {
+        KeyStrategyFactory keys = KeyStrategy.builder()
+                .addStrategy(PlanStateKeys.FINAL_SUMMARY, KeyStrategy.REPLACE)
+                .addStrategy(MateClawStateKeys.CONTENT_STREAMED, KeyStrategy.REPLACE)
+                .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
+                .build();
+        CompiledGraph graph = new StateGraph("webchat-plan-e2e", keys)
+                .addNode("terminal", AsyncNodeAction.node_async(state -> Map.of(
+                        PlanStateKeys.FINAL_SUMMARY, summary,
+                        MateClawStateKeys.CONTENT_STREAMED, false,
+                        MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, ledger)))
+                .addEdge(StateGraph.START, "terminal")
+                .addEdge("terminal", StateGraph.END)
+                .compile();
+        ConversationService conversations = mock(ConversationService.class);
+        when(conversations.countMessages(anyString())).thenReturn(0L);
+        when(conversations.listMessages(anyString())).thenReturn(List.of());
+        StateGraphPlanExecuteAgent agent = new StateGraphPlanExecuteAgent(
+                mock(ChatClient.class), conversations, graph,
+                mock(PlanningService.class), null, null);
+        return agent.chatStructuredStream("question", "conversation", "visitor");
+    }
+
+    private static AgentService.StreamDelta emptySourceRefsDelta() {
+        return new AgentService.StreamDelta(
+                null, null, "source_refs", Map.of("items", List.of()), false);
+    }
+
     // ==================== tests ====================
 
     @Test
@@ -240,14 +283,17 @@ class WebChatStreamE2ETest {
                         eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
                 .thenReturn(Flux.just(
                         new AgentService.StreamDelta("Hello ", null),
-                        new AgentService.StreamDelta("world!", null)));
+                        new AgentService.StreamDelta("world!", null),
+                        new AgentService.StreamDelta(null, null, "source_refs",
+                                Map.of("items", List.of()), false)));
 
         String visitorId = "vE2E-happy";
         List<SseEvent> events = sendAndDrain(
                 streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"" + visitorId + "\"}"));
 
         List<String> names = events.stream().map(e -> e.name).toList();
-        assertThat(names).containsSequence("meta", "content_delta", "content_delta", "done");
+        assertThat(names).containsSequence(
+                "meta", "content_delta", "content_delta", "source_refs", "done");
 
         SseEvent meta = events.stream().filter(e -> "meta".equals(e.name)).findFirst().orElseThrow();
         assertThat(meta.data)
@@ -274,7 +320,9 @@ class WebChatStreamE2ETest {
                                 Map.of("promptTokens", 10, "completionTokens", 5,
                                         "runtimeModelName", "mock-model", "runtimeProviderId", "mock-provider"),
                                 false),
-                        new AgentService.StreamDelta("answer.", null)));
+                        new AgentService.StreamDelta("answer.", null),
+                        new AgentService.StreamDelta(null, null, "source_refs",
+                                Map.of("items", List.of()), false)));
 
         String visitorId = "vE2E-multi";
         List<SseEvent> events = sendAndDrain(
@@ -284,7 +332,8 @@ class WebChatStreamE2ETest {
         for (SseEvent e : events) {
             byName.computeIfAbsent(e.name, k -> new ArrayList<>()).add(e);
         }
-        assertThat(byName).containsKeys("meta", "thinking_delta", "content_delta", "done");
+        assertThat(byName).containsKeys(
+                "meta", "thinking_delta", "content_delta", "source_refs", "done");
         // 2 content_delta events, 1 thinking_delta, exactly one done.
         assertThat(byName.get("content_delta")).hasSize(2);
         assertThat(byName.get("thinking_delta")).hasSize(1);
@@ -308,14 +357,15 @@ class WebChatStreamE2ETest {
     @Test
     @DisplayName("source_refs SSE payload is persisted and returned unchanged by visitor history")
     void sourceRefsRoundTripThroughHistory() throws Exception {
-        SafeSourceRef ref = new SafeSourceRef(
-                "wiki", "operating-guide", "Operating Guide", "Runbook · page 2", null, 1);
+        SourceEvidenceLedger ledger = new SourceEvidenceLedger(
+                Set.of(), Set.of(), Set.of(), Set.of("Operating Guide"), Set.of("secret-chunk"),
+                Set.of(new SourceEvidenceLedger.WikiCitation(
+                        1, "secret-chunk", "Operating Guide", "Runbook", 2, "operating-guide")));
+        Flux<AgentService.StreamDelta> realPlanStream =
+                realPlanGraphStream("Grounded answer.", ledger);
         org.mockito.Mockito.when(agentService.chatStructuredStream(
                         eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
-                .thenReturn(Flux.just(
-                        new AgentService.StreamDelta("Grounded answer.", null),
-                        new AgentService.StreamDelta(null, null, "source_refs",
-                                Map.of("items", List.of(ref), "chunkId", "secret-chunk"), false)));
+                .thenReturn(realPlanStream);
 
         String visitorId = "vE2E-sources";
         List<SseEvent> events = sendAndDrain(
@@ -330,6 +380,9 @@ class WebChatStreamE2ETest {
                 .filter(event -> "done".equals(event.name)).findFirst().orElseThrow());
         assertThat(contentIndex).isLessThan(sourceIndex);
         assertThat(sourceIndex).isLessThan(doneIndex);
+        assertThat(lastAssistantContent(
+                WebChatController.deriveConversationId(API_KEY, visitorId, null)))
+                .isEqualTo("Grounded answer.");
 
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
         SseEvent meta = events.stream().filter(event -> "meta".equals(event.name)).findFirst().orElseThrow();
@@ -361,12 +414,11 @@ class WebChatStreamE2ETest {
     @Test
     @DisplayName("an accepted empty source_refs list remains explicit in storage and history")
     void emptySourceRefsRoundTripThroughHistory() throws Exception {
+        Flux<AgentService.StreamDelta> realPlanStream = realPlanGraphStream(
+                "Ungrounded answer.", SourceEvidenceLedger.empty());
         org.mockito.Mockito.when(agentService.chatStructuredStream(
                         eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
-                .thenReturn(Flux.just(
-                        new AgentService.StreamDelta("Ungrounded answer.", null),
-                        new AgentService.StreamDelta(null, null, "source_refs",
-                                Map.of("items", List.of()), false)));
+                .thenReturn(realPlanStream);
 
         String visitorId = "vE2E-empty-sources";
         List<SseEvent> events = sendAndDrain(
@@ -427,6 +479,49 @@ class WebChatStreamE2ETest {
     }
 
     @Test
+    @DisplayName("missing source_refs terminates with a fixed error and no assistant success")
+    void missingSourceRefsTerminateSafely() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(new AgentService.StreamDelta("Unverified answer.", null)));
+
+        String visitorId = "vE2E-missing-sources";
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"" + visitorId + "\"}"));
+
+        assertThat(events.stream().filter(event -> "error".equals(event.name)).findFirst().orElseThrow().data)
+                .contains("WORKBENCH_SOURCE_REFS_INVALID")
+                .contains("Source references are invalid");
+        assertThat(events.stream().map(event -> event.name)).doesNotContain("done");
+        assertThat(countAssistantMessages(
+                WebChatController.deriveConversationId(API_KEY, visitorId, null))).isZero();
+    }
+
+    @Test
+    @DisplayName("duplicate source_refs terminates with a fixed error and no assistant success")
+    void duplicateSourceRefsTerminateSafely() throws Exception {
+        AgentService.StreamDelta emptyRefs = new AgentService.StreamDelta(
+                null, null, "source_refs", Map.of("items", List.of()), false);
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta("Unverified answer.", null),
+                        emptyRefs,
+                        emptyRefs));
+
+        String visitorId = "vE2E-duplicate-sources";
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"" + visitorId + "\"}"));
+
+        assertThat(events.stream().filter(event -> "error".equals(event.name)).findFirst().orElseThrow().data)
+                .contains("WORKBENCH_SOURCE_REFS_INVALID")
+                .contains("Source references are invalid");
+        assertThat(events.stream().map(event -> event.name)).doesNotContain("done");
+        assertThat(countAssistantMessages(
+                WebChatController.deriveConversationId(API_KEY, visitorId, null))).isZero();
+    }
+
+    @Test
     @DisplayName("bad API key → SSE error event 'Invalid API Key', connection closed")
     void badApiKey() throws Exception {
         List<SseEvent> events = sendAndDrain(
@@ -481,7 +576,9 @@ class WebChatStreamE2ETest {
     void explicitSessionId() throws Exception {
         org.mockito.Mockito.when(agentService.chatStructuredStream(
                         eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
-                .thenReturn(Flux.just(new AgentService.StreamDelta("ack", null)));
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta("ack", null),
+                        emptySourceRefsDelta()));
 
         String visitorId = "vE2E-sid";
         String sessionId = "thread-42";
@@ -523,7 +620,8 @@ class WebChatStreamE2ETest {
                                 Map.of("phase", "planning", "timestamp", 1L), false),
                         new AgentService.StreamDelta(null, null, "phase",
                                 Map.of("phase", "generating", "timestamp", 2L), false),
-                        new AgentService.StreamDelta("ok", null)));
+                        new AgentService.StreamDelta("ok", null),
+                        emptySourceRefsDelta()));
 
         List<SseEvent> events = sendAndDrain(
                 streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vPhase\"}"));
@@ -547,7 +645,8 @@ class WebChatStreamE2ETest {
                                         "toolName", "web_search",
                                         "arguments", "secret query with PII",
                                         "timestamp", 1L), false),
-                        new AgentService.StreamDelta("done", null)));
+                        new AgentService.StreamDelta("done", null),
+                        emptySourceRefsDelta()));
 
         List<SseEvent> events = sendAndDrain(
                 streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vTool\"}"));
@@ -572,7 +671,8 @@ class WebChatStreamE2ETest {
                                         "result", "<huge internal result payload>",
                                         "success", true,
                                         "timestamp", 1L), false),
-                        new AgentService.StreamDelta("ack", null)));
+                        new AgentService.StreamDelta("ack", null),
+                        emptySourceRefsDelta()));
 
         List<SseEvent> events = sendAndDrain(
                 streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vToolEnd\"}"));
@@ -595,7 +695,8 @@ class WebChatStreamE2ETest {
                                 Map.of("planId", 42L,
                                         "steps", List.of("search the web", "summarize"),
                                         "timestamp", 1L), false),
-                        new AgentService.StreamDelta("done", null)));
+                        new AgentService.StreamDelta("done", null),
+                        emptySourceRefsDelta()));
 
         List<SseEvent> events = sendAndDrain(
                 streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vPlan\"}"));
@@ -621,7 +722,8 @@ class WebChatStreamE2ETest {
                                 Map.of("index", 0, "reason", "tool_call"), false),
                         new AgentService.StreamDelta(null, null, "finish_reason",
                                 Map.of("reason", "STOP"), false),
-                        new AgentService.StreamDelta("done", null)));
+                        new AgentService.StreamDelta("done", null),
+                        emptySourceRefsDelta()));
 
         List<SseEvent> events = sendAndDrain(
                 streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vQuiet\"}"));
