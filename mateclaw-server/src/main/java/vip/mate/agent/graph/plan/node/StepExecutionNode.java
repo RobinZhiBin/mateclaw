@@ -25,6 +25,7 @@ import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.context.RuntimeContextInjector;
+import vip.mate.agent.context.TrustedWorkbenchContextInjector;
 import vip.mate.agent.graph.executor.ToolExecutionExecutor;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.planning.service.PlanningService;
@@ -813,6 +814,7 @@ public class StepExecutionNode implements NodeAction {
                 8. 每一步最多做一个必要的检查和一个必要的执行，不要无意义循环。
                 """;
         messages.add(new SystemMessage(enhancedSystemPrompt));
+        TrustedWorkbenchContextInjector.append(messages, accessor.chatOrigin().trustedWorkbenchContext());
         // Runtime skill catalog (rendered here instead of baked into the system
         // prompt). The Plan path never pins per-run loads, so render with an
         // empty loaded set — this reproduces the pre-disclosure DB ordering.

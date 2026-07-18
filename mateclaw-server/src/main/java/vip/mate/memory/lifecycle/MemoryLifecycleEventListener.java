@@ -32,6 +32,7 @@ public class MemoryLifecycleEventListener {
     @Async
     @EventListener
     public void onConversationCompleted(ConversationCompletedEvent event) {
+        if (!event.memoryLearningEnabled()) return;
         if (!props.isLifecycleMediatorEnabled()) return;
         try {
             mediator.onSessionEnd(event.agentId(), event.conversationId());

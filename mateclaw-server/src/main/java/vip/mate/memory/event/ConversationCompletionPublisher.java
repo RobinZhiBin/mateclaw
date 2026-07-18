@@ -92,6 +92,16 @@ public class ConversationCompletionPublisher {
                         String assistantReply,
                         String source,
                         String ownerKey) {
+        publish(agentId, conversationId, userMessage, assistantReply, source, ownerKey, true);
+    }
+
+    public void publish(Long agentId,
+                        String conversationId,
+                        String userMessage,
+                        String assistantReply,
+                        String source,
+                        String ownerKey,
+                        boolean memoryLearningEnabled) {
         if (agentId == null || conversationId == null || conversationId.isBlank()) {
             return;
         }
@@ -104,7 +114,8 @@ public class ConversationCompletionPublisher {
                     assistantReply != null ? assistantReply : "",
                     messageCount,
                     source != null ? source : "unknown",
-                    ownerKey));
+                    ownerKey,
+                    memoryLearningEnabled));
         } catch (Exception e) {
             log.debug("[Memory] Failed to publish ConversationCompletedEvent (source={}, conv={}): {}",
                     source, conversationId, e.getMessage());

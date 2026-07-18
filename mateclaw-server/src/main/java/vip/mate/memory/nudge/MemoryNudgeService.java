@@ -60,6 +60,15 @@ public class MemoryNudgeService {
 
     @Async
     public void maybeNudge(Long agentId, String conversationId, int messageCount, String ownerKey) {
+        maybeNudge(agentId, conversationId, messageCount, ownerKey, true);
+    }
+
+    @Async
+    public void maybeNudge(Long agentId, String conversationId, int messageCount, String ownerKey,
+                           boolean memoryLearningEnabled) {
+        if (!memoryLearningEnabled) {
+            return;
+        }
         if (!properties.isNudgeEnabled()) {
             return;
         }

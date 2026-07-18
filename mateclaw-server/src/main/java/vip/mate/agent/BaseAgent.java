@@ -13,6 +13,7 @@ import org.springframework.util.MimeType;
 import reactor.core.publisher.Flux;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ChatOriginHolder;
+import vip.mate.agent.context.TrustedWorkbenchContextInjector;
 import vip.mate.approval.ApprovalPlaceholderUtil;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.routing.MediaCaptionService;
@@ -237,6 +238,8 @@ public abstract class BaseAgent {
                 .system(systemPrompt != null ? systemPrompt : "你是一个有帮助的AI助手。");
 
         List<Message> historyMessages = buildConversationHistory(conversationId, userMessage);
+        historyMessages = TrustedWorkbenchContextInjector.inject(
+                historyMessages, ChatOriginHolder.get().trustedWorkbenchContext());
         if (!historyMessages.isEmpty()) {
             request = request.messages(historyMessages);
         }

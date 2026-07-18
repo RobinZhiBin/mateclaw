@@ -251,7 +251,7 @@ public class AgentService {
      * down to {@code @Tool} methods via Spring AI {@link org.springframework.ai.chat.model.ToolContext}.
      */
     public String chat(Long agentId, String message, String conversationId, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, message);
+        trackMemoryRecallIfEnabled(agentId, message, origin);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
@@ -287,7 +287,7 @@ public class AgentService {
     }
 
     public Flux<String> chatStream(Long agentId, String message, String conversationId, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, message);
+        trackMemoryRecallIfEnabled(agentId, message, origin);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         // Capture the origin into a request-scoped holder; cleared on Flux
         // termination so the next reactive subscriber doesn't inherit stale state.
@@ -323,7 +323,7 @@ public class AgentService {
     public Flux<StreamDelta> chatStructuredStream(Long agentId, String message, String conversationId,
                                                    String requesterId, String thinkingLevel,
                                                    ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, message);
+        trackMemoryRecallIfEnabled(agentId, message, origin);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
 
         // 设置请求级思考深度（通过 ThreadLocal 传递到 StateGraph 执行）
@@ -369,7 +369,7 @@ public class AgentService {
     }
 
     public String execute(Long agentId, String goal, String conversationId, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, goal);
+        trackMemoryRecallIfEnabled(agentId, goal, origin);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
@@ -396,7 +396,7 @@ public class AgentService {
 
     public String chatWithReplay(Long agentId, String userMessage, String conversationId,
                                   String toolCallPayload, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, userMessage);
+        trackMemoryRecallIfEnabled(agentId, userMessage, origin);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
@@ -460,7 +460,7 @@ public class AgentService {
     public Flux<StreamDelta> chatWithReplayStream(Long agentId, String userMessage, String conversationId,
                                                    String toolCallPayload, String requesterId,
                                                    ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, userMessage);
+        trackMemoryRecallIfEnabled(agentId, userMessage, origin);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
         return Flux.defer(() -> {
@@ -575,11 +575,14 @@ public class AgentService {
             }
             String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
             TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
-            String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
+            ChatOrigin origin = ChatOriginHolder.get();
+            String memoryContext = memoryRecallEnabled(origin) ? lifecycleMediator.beforeLlmCall(ctx) : "";
             // Inject memory context into the user message (RFC-037 §3.3)
             String enrichedMessage = injectMemoryContext(message, memoryContext);
             String result = invoke.apply(enrichedMessage, conversationId);
-            lifecycleMediator.afterLlmCall(ctx, result != null ? result : "");
+            if (memoryLearningEnabled(origin)) {
+                lifecycleMediator.afterLlmCall(ctx, result != null ? result : "");
+            }
             return result;
         } finally {
             safeUnregister(conversationId);
@@ -604,7 +607,8 @@ public class AgentService {
             }
             String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
             TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
-            String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
+            ChatOrigin origin = ChatOriginHolder.get();
+            String memoryContext = memoryRecallEnabled(origin) ? lifecycleMediator.beforeLlmCall(ctx) : "";
             String enrichedMessage = injectMemoryContext(message, memoryContext);
             StringBuilder reply = new StringBuilder();
             return invoke.apply(enrichedMessage, conversationId)
@@ -614,7 +618,11 @@ public class AgentService {
                             reply.append(text);
                         }
                     })
-                    .doOnComplete(() -> lifecycleMediator.afterLlmCall(ctx, reply.toString()))
+                    .doOnComplete(() -> {
+                        if (memoryLearningEnabled(origin)) {
+                            lifecycleMediator.afterLlmCall(ctx, reply.toString());
+                        }
+                    })
                     .doOnError(e -> log.debug("[Memory] Stream error, skipping afterLlmCall: {}", e.getMessage()))
                     .doFinally(s -> safeUnregister(conversationId));
         } catch (Exception e) {
@@ -646,6 +654,20 @@ public class AgentService {
     private String injectMemoryContext(String message, String memoryContext) {
         if (memoryContext == null || memoryContext.isBlank()) return message;
         return memoryContext + "\n\n" + message;
+    }
+
+    private void trackMemoryRecallIfEnabled(Long agentId, String message, ChatOrigin origin) {
+        if (memoryRecallEnabled(origin)) {
+            memoryRecallTracker.trackRecalls(agentId, message);
+        }
+    }
+
+    private boolean memoryRecallEnabled(ChatOrigin origin) {
+        return origin == null || !Boolean.FALSE.equals(origin.memoryRecallEnabled());
+    }
+
+    private boolean memoryLearningEnabled(ChatOrigin origin) {
+        return origin == null || !Boolean.FALSE.equals(origin.memoryLearningEnabled());
     }
 
     // ==================== 内部方法 ====================

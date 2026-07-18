@@ -75,7 +75,10 @@ public record ChatOrigin(
          * forwarding uses this to tell "MateClaw authenticated this user" apart
          * from "this is an external/anonymous identifier" (RFC: identity typing).
          */
-        @Nullable Long requesterUserId
+        @Nullable Long requesterUserId,
+        @Nullable TrustedWorkbenchContext trustedWorkbenchContext,
+        @Nullable Boolean memoryRecallEnabled,
+        @Nullable Boolean memoryLearningEnabled
 ) {
 
     /** Key used when this origin is wrapped into a Spring AI {@link ToolContext}. */
@@ -84,6 +87,24 @@ public record ChatOrigin(
     /** Sentinel used by AgentService default overloads where no origin is supplied. */
     public static final ChatOrigin EMPTY =
             new ChatOrigin(null, null, "", null, null, null, null, false, null, null, null, null, null);
+
+    public ChatOrigin(@Nullable Long agentId,
+                      @Nullable String conversationId,
+                      @Nullable String requesterId,
+                      @Nullable Long workspaceId,
+                      @Nullable String workspaceBasePath,
+                      @Nullable Long channelId,
+                      @Nullable ChannelTarget channelTarget,
+                      boolean cronOrigin,
+                      @Nullable String senderName,
+                      @Nullable String channelType,
+                      @Nullable String chatId,
+                      @Nullable String baseUrl,
+                      @Nullable Long requesterUserId) {
+        this(agentId, conversationId, requesterId, workspaceId, workspaceBasePath, channelId,
+                channelTarget, cronOrigin, senderName, channelType, chatId, baseUrl,
+                requesterUserId, null, true, true);
+    }
 
     // ---------------- Factories per entry point ----------------
 
@@ -134,27 +155,31 @@ public record ChatOrigin(
     public ChatOrigin withAgent(@Nullable Long newAgentId) {
         return new ChatOrigin(newAgentId, conversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, baseUrl, requesterUserId);
+                senderName, channelType, chatId, baseUrl, requesterUserId,
+                trustedWorkbenchContext, memoryRecallEnabled, memoryLearningEnabled);
     }
 
     public ChatOrigin withWorkspace(@Nullable Long newWorkspaceId,
                                     @Nullable String newWorkspaceBasePath) {
         return new ChatOrigin(agentId, conversationId, requesterId,
                 newWorkspaceId, newWorkspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, baseUrl, requesterUserId);
+                senderName, channelType, chatId, baseUrl, requesterUserId,
+                trustedWorkbenchContext, memoryRecallEnabled, memoryLearningEnabled);
     }
 
     public ChatOrigin withConversationId(@Nullable String newConversationId) {
         return new ChatOrigin(agentId, newConversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, baseUrl, requesterUserId);
+                senderName, channelType, chatId, baseUrl, requesterUserId,
+                trustedWorkbenchContext, memoryRecallEnabled, memoryLearningEnabled);
     }
 
     /** Carry a request-derived public base URL (see {@link #baseUrl()}). */
     public ChatOrigin withBaseUrl(@Nullable String newBaseUrl) {
         return new ChatOrigin(agentId, conversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, newBaseUrl, requesterUserId);
+                senderName, channelType, chatId, newBaseUrl, requesterUserId,
+                trustedWorkbenchContext, memoryRecallEnabled, memoryLearningEnabled);
     }
 
     /**
@@ -168,7 +193,17 @@ public record ChatOrigin(
                                   @Nullable String newChatId) {
         return new ChatOrigin(agentId, conversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                newSenderName, newChannelType, newChatId, baseUrl, requesterUserId);
+                newSenderName, newChannelType, newChatId, baseUrl, requesterUserId,
+                trustedWorkbenchContext, memoryRecallEnabled, memoryLearningEnabled);
+    }
+
+    public ChatOrigin withTrustedWorkbenchContext(@Nullable TrustedWorkbenchContext context,
+                                                  boolean recallEnabled,
+                                                  boolean learningEnabled) {
+        return new ChatOrigin(agentId, conversationId, requesterId,
+                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
+                senderName, channelType, chatId, baseUrl, requesterUserId,
+                context, recallEnabled, learningEnabled);
     }
 
     // ---------------- Spring AI ToolContext interop ----------------

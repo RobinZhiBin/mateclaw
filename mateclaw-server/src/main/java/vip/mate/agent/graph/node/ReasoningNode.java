@@ -25,6 +25,7 @@ import vip.mate.agent.context.LoopBudgetConfig;
 import vip.mate.agent.context.PrefixBudgetPlan;
 import vip.mate.agent.context.LoopMessageBudgeter;
 import vip.mate.agent.context.RuntimeContextInjector;
+import vip.mate.agent.context.TrustedWorkbenchContextInjector;
 import vip.mate.agent.context.TokenEstimator;
 import vip.mate.agent.graph.state.FinishReason;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
@@ -1293,6 +1294,8 @@ public class ReasoningNode implements NodeAction {
                                         String runtimeProviderId) {
         List<Message> prefix = new ArrayList<>();
         prefix.add(new SystemMessage(systemPrompt));
+        TrustedWorkbenchContextInjector.append(prefix,
+                chatOrigin != null ? chatOrigin.trustedWorkbenchContext() : null);
         prefix.add(new UserMessage(RuntimeContextInjector.buildContextMessage(
                 workspaceBasePath, null, chatOrigin, runtimeModelName, runtimeProviderId)));
         // When this turn already recalled the user's own current project from

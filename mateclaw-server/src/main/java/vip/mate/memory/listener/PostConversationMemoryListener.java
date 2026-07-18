@@ -29,6 +29,9 @@ public class PostConversationMemoryListener {
     @Async
     @EventListener
     public void onConversationCompleted(ConversationCompletedEvent event) {
+        if (!event.memoryLearningEnabled()) {
+            return;
+        }
         if (!properties.isAutoSummarizeEnabled()) {
             return;
         }
@@ -60,7 +63,8 @@ public class PostConversationMemoryListener {
 
         // Memory Nudge: extract structured entries every N turns
         try {
-            nudgeService.maybeNudge(event.agentId(), event.conversationId(), event.messageCount(), event.ownerKey());
+            nudgeService.maybeNudge(event.agentId(), event.conversationId(), event.messageCount(),
+                    event.ownerKey(), event.memoryLearningEnabled());
         } catch (Exception e) {
             log.debug("[Memory] Nudge trigger failed (non-fatal): {}", e.getMessage());
         }

@@ -52,6 +52,8 @@ import reactor.core.Disposable;
 import vip.mate.approval.PendingApproval;
 import vip.mate.approval.ResolveOutcome;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.TrustedWorkbenchContext;
+import vip.mate.workbench.service.WorkbenchServiceKeyAuth;
 
 /**
  * WebChat 嵌入式对话接口
@@ -84,6 +86,7 @@ public class WebChatController {
     private final vip.mate.skill.repository.SkillMapper skillMapper;
     private final vip.mate.wiki.repository.WikiPageMapper wikiPageMapper;
     private final vip.mate.wiki.repository.WikiKnowledgeBaseMapper wikiKbMapper;
+    private final WorkbenchServiceKeyAuth workbenchServiceKeyAuth;
     /**
      * ISSUE #413 P1-A2/A3/A4: drives the approval lifecycle for WebChat
      * (API-Key) channels. Before this, a tool guarded by ToolGuard would
@@ -112,6 +115,7 @@ public class WebChatController {
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(
             @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-Workbench-Service-Key", required = false) String workbenchServiceKey,
             @RequestBody WebChatRequest request) {
 
         // RFC-058 PR-1: Utf8SseEmitter 显式 charset=UTF-8，防止中文 SSE 乱码
@@ -123,6 +127,22 @@ public class WebChatController {
             sendErrorAndComplete(emitter, "Invalid API Key");
             return emitter;
         }
+
+        TrustedWorkbenchContext parsedTrustedContext = null;
+        if (request.hasServerOnlyWorkbenchFields()) {
+            WorkbenchServiceKeyAuth.Result auth = workbenchServiceKeyAuth.authenticate(workbenchServiceKey);
+            if (auth != WorkbenchServiceKeyAuth.Result.VALID) {
+                sendErrorAndComplete(emitter, "Workbench service authentication required");
+                return emitter;
+            }
+            try {
+                parsedTrustedContext = TrustedWorkbenchContext.parse(request.getTrustedWorkbenchContext());
+            } catch (IllegalArgumentException ex) {
+                sendErrorAndComplete(emitter, ex.getMessage());
+                return emitter;
+            }
+        }
+        final TrustedWorkbenchContext trustedContext = parsedTrustedContext;
 
         // Resolve the target agent: an explicit request agentId overrides the channel's
         // bound agent, but must belong to the channel's workspace (anti privilege-escalation:
@@ -223,7 +243,10 @@ public class WebChatController {
                 // (publish) paths below.
                 vip.mate.agent.context.ChatOrigin webchatOrigin =
                         vip.mate.agent.context.ChatOrigin.web(conversationId, visitorId, webWsId, null)
-                                .withSender(null, "api", null);
+                                .withSender(null, "api", null)
+                                .withTrustedWorkbenchContext(trustedContext,
+                                        request.memoryRecallEnabled(),
+                                        request.memoryLearningEnabled());
                 String webchatOwnerKey = memoryOwnerResolver.resolve(webchatOrigin);
 
                 reactor.core.Disposable disposable = agentService.chatStructuredStream(resolvedAgentId, message, conversationId, visitorId, null, webchatOrigin)
@@ -282,7 +305,8 @@ public class WebChatController {
                             }
                             try {
                                 completionPublisher.publish(
-                                        resolvedAgentId, conversationId, message, reply, "webchat", webchatOwnerKey);
+                                        resolvedAgentId, conversationId, message, reply, "webchat",
+                                        webchatOwnerKey, request.memoryLearningEnabled());
                             } catch (Exception publishErr) {
                                 log.warn("[WebChat] Failed to publish completion event: {}", publishErr.getMessage());
                             }
@@ -315,6 +339,10 @@ public class WebChatController {
         });
 
         return emitter;
+    }
+
+    public SseEmitter chatStream(String apiKey, WebChatRequest request) {
+        return chatStream(apiKey, null, request);
     }
 
     /**
@@ -1943,6 +1971,9 @@ public class WebChatController {
     public static class WebChatRequest {
         private String message;
         private String visitorId;
+        private JsonNode trustedWorkbenchContext;
+        private Boolean memoryRecallEnabled;
+        private Boolean memoryLearningEnabled;
         /** Optional: route this call to a specific agent instead of the channel's bound agent.
          *  Must belong to the channel's workspace.
          *  <p>Only applied when the (visitorId + sessionId) conversation is first created. Once that
@@ -1956,6 +1987,20 @@ public class WebChatController {
          *  for this conversation. Metadata is resolved server-side; unknown / foreign / expired
          *  ids are dropped. */
         private List<String> attachmentIds;
+
+        boolean hasServerOnlyWorkbenchFields() {
+            return trustedWorkbenchContext != null
+                    || memoryRecallEnabled != null
+                    || memoryLearningEnabled != null;
+        }
+
+        boolean memoryRecallEnabled() {
+            return memoryRecallEnabled == null || memoryRecallEnabled;
+        }
+
+        boolean memoryLearningEnabled() {
+            return memoryLearningEnabled == null || memoryLearningEnabled;
+        }
     }
 
     /** Compact view of one of a visitor's conversation threads. */

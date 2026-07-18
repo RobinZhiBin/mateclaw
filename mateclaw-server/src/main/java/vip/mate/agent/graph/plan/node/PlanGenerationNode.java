@@ -22,6 +22,7 @@ import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.context.RuntimeContextInjector;
+import vip.mate.agent.context.TrustedWorkbenchContextInjector;
 import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalCreateRequest;
 import vip.mate.goal.model.GoalCriterion;
@@ -449,6 +450,7 @@ public class PlanGenerationNode implements NodeAction {
             vip.mate.agent.context.ChatOrigin chatOrigin =
                     state.<vip.mate.agent.context.ChatOrigin>value(MateClawStateKeys.CHAT_ORIGIN)
                             .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
+            TrustedWorkbenchContextInjector.append(promptMessages, chatOrigin.trustedWorkbenchContext());
             String runtimeModelName = state.value(MateClawStateKeys.RUNTIME_MODEL_NAME, "");
             String runtimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
             promptMessages.add(new UserMessage(

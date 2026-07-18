@@ -23,11 +23,18 @@ public record ConversationCompletedEvent(
         String assistantReply,
         int messageCount,
         String triggerSource,
-        String ownerKey
+        String ownerKey,
+        boolean memoryLearningEnabled
 ) {
     /** Backwards-compatible constructor without an owner key (resolves to null). */
     public ConversationCompletedEvent(Long agentId, String conversationId, String userMessage,
                                       String assistantReply, int messageCount, String triggerSource) {
-        this(agentId, conversationId, userMessage, assistantReply, messageCount, triggerSource, null);
+        this(agentId, conversationId, userMessage, assistantReply, messageCount, triggerSource, null, true);
+    }
+
+    public ConversationCompletedEvent(Long agentId, String conversationId, String userMessage,
+                                      String assistantReply, int messageCount, String triggerSource,
+                                      String ownerKey) {
+        this(agentId, conversationId, userMessage, assistantReply, messageCount, triggerSource, ownerKey, true);
     }
 }
