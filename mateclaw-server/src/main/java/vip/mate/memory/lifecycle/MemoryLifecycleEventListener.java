@@ -9,10 +9,10 @@ import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.event.ConversationCompletedEvent;
 
 /**
- * Dispatches ConversationCompletedEvent to MemoryManager.onSessionEnd unconditionally.
+ * Dispatches ConversationCompletedEvent to MemoryManager.onSessionEnd when memory learning is enabled.
  *
- * <p>Contract: every successfully-persisted conversation end must reach all memory
- * providers, regardless of whether summarization / nudge preconditions held.
+ * <p>Contract: every successfully-persisted conversation end whose origin allows learning
+ * must reach all memory providers, regardless of whether summarization / nudge preconditions held.
  *
  * <p>This is a separate listener from PostConversationMemoryListener on purpose —
  * that one has four early returns tied to summarize/nudge heuristics. Those are fine

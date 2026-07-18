@@ -9,6 +9,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
+import vip.mate.agent.context.TrustedWorkbenchContextInjector;
 import vip.mate.agent.graph.observation.ObservationProcessor;
 import vip.mate.agent.graph.state.FinishReason;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
@@ -142,6 +143,8 @@ public class LimitExceededNode implements NodeAction {
 
         List<Message> promptMessages = new ArrayList<>();
         promptMessages.add(new SystemMessage(systemPrompt));
+        TrustedWorkbenchContextInjector.append(
+                promptMessages, accessor.chatOrigin().trustedWorkbenchContext());
         promptMessages.add(new UserMessage(userPrompt));
 
         // 流式调用 LLM，实时推送 content/thinking

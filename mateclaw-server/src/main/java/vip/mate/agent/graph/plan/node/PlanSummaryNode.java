@@ -3,16 +3,19 @@ package vip.mate.agent.graph.plan.node;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
+import vip.mate.agent.context.TrustedWorkbenchContextInjector;
 import vip.mate.agent.graph.plan.state.PlanStateAccessor;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.planning.service.PlanningService;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -71,12 +74,14 @@ public class PlanSummaryNode implements NodeAction {
 
             userContent.append("执行结果：\n").append(String.join("\n", completedResults));
 
-            Prompt prompt = new Prompt(List.of(
-                    new SystemMessage("请根据以下各步骤的执行结果，给出一个简洁完整的总结回答。"
-                            + "直接回答用户的原始问题，不要罗列步骤。"
-                            + "如果对话上下文中包含用户的特殊要求（如风格、语言、格式等），请在总结中体现。"),
-                    new UserMessage(userContent.toString())
-            ));
+            List<Message> promptMessages = new ArrayList<>();
+            promptMessages.add(new SystemMessage("请根据以下各步骤的执行结果，给出一个简洁完整的总结回答。"
+                    + "直接回答用户的原始问题，不要罗列步骤。"
+                    + "如果对话上下文中包含用户的特殊要求（如风格、语言、格式等），请在总结中体现。"));
+            TrustedWorkbenchContextInjector.append(
+                    promptMessages, accessor.chatOrigin().trustedWorkbenchContext());
+            promptMessages.add(new UserMessage(userContent.toString()));
+            Prompt prompt = new Prompt(promptMessages);
 
             // 流式调用 LLM，实时推送 content/thinking
             NodeStreamingChatHelper.StreamResult result = streamingHelper.streamCall(

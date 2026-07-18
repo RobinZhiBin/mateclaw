@@ -115,7 +115,9 @@ public record TrustedWorkbenchContext(
         JsonNode value = node.get(field);
         if (missing(value)) return null;
         if (!value.isTextual()) throw new IllegalArgumentException(field + " must be a string");
-        String text = value.asText().trim();
+        String rawText = value.asText();
+        rejectControlCharacters(rawText, field);
+        String text = rawText.trim();
         if (text.isEmpty()) return null;
         if (text.length() > MAX_TEXT_CHARS) throw new IllegalArgumentException(field + " is too large");
         return text;
@@ -129,11 +131,21 @@ public record TrustedWorkbenchContext(
         List<String> items = new ArrayList<>(value.size());
         for (JsonNode item : value) {
             if (!item.isTextual()) throw new IllegalArgumentException(field + " items must be strings");
-            String text = item.asText().trim();
+            String rawText = item.asText();
+            rejectControlCharacters(rawText, field);
+            String text = rawText.trim();
             if (text.length() > MAX_TEXT_CHARS) throw new IllegalArgumentException(field + " item is too large");
             if (!text.isEmpty()) items.add(text);
         }
         return List.copyOf(items);
+    }
+
+    private static void rejectControlCharacters(String text, String field) {
+        boolean hasControlCharacter = text.codePoints().anyMatch(codePoint ->
+                Character.isISOControl(codePoint) || Character.getType(codePoint) == Character.FORMAT);
+        if (hasControlCharacter) {
+            throw new IllegalArgumentException(field + " contains control characters");
+        }
     }
 
     private static boolean missing(JsonNode node) {

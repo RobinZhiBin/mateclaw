@@ -2,6 +2,13 @@ package vip.mate.agent.graph.plan.node;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.TrustedWorkbenchContext;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.planning.service.PlanningService;
@@ -14,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static vip.mate.agent.graph.state.MateClawStateKeys.CONTENT_STREAMED;
 import static vip.mate.agent.graph.state.MateClawStateKeys.CONVERSATION_ID;
@@ -42,5 +50,39 @@ class PlanSummaryNodeFallbackTest {
                 .contains("Summarize findings", "step result");
         assertThat(output.get(CONTENT_STREAMED)).isEqualTo(false);
         assertThat(output.get(THINKING_STREAMED)).isEqualTo(false);
+    }
+
+    @Test
+    void finalSummaryKeepsTrustedProfileBeforeTheCurrentGoal() throws Exception {
+        PlanningService planning = mock(PlanningService.class);
+        NodeStreamingChatHelper streaming = mock(NodeStreamingChatHelper.class);
+        when(streaming.streamCall(any(), any(), anyString(), anyString()))
+                .thenReturn(new NodeStreamingChatHelper.StreamResult(
+                        "summary", "", new AssistantMessage("summary"), List.of(), false, 1, 1));
+        Map<String, Object> values = new HashMap<>();
+        values.put(PlanStateKeys.PLAN_ID, 7L);
+        values.put(PlanStateKeys.GOAL, "current goal");
+        values.put(PlanStateKeys.COMPLETED_RESULTS, List.of("step result"));
+        values.put(CONVERSATION_ID, "conversation");
+        values.put(vip.mate.agent.graph.state.MateClawStateKeys.CHAT_ORIGIN, trustedOrigin());
+
+        new PlanSummaryNode(null, planning, streaming).apply(new OverAllState(values));
+
+        ArgumentCaptor<Prompt> prompt = ArgumentCaptor.forClass(Prompt.class);
+        verify(streaming).streamCall(any(), prompt.capture(), anyString(), anyString());
+        assertThat(prompt.getValue().getInstructions()).hasSize(3);
+        assertThat(prompt.getValue().getInstructions().get(0)).isInstanceOf(SystemMessage.class);
+        assertThat(prompt.getValue().getInstructions().get(1)).isInstanceOf(SystemMessage.class);
+        assertThat(prompt.getValue().getInstructions().get(1).getText()).contains("PMO");
+        assertThat(prompt.getValue().getInstructions().get(2)).isInstanceOf(UserMessage.class);
+        assertThat(prompt.getValue().getInstructions().get(2).getText()).contains("current goal");
+    }
+
+    private static ChatOrigin trustedOrigin() {
+        TrustedWorkbenchContext context = new TrustedWorkbenchContext(
+                3, new TrustedWorkbenchContext.Organization("PMO", "Owner", null),
+                null, null, null, null);
+        return ChatOrigin.web("conversation", "visitor", 1L, null)
+                .withTrustedWorkbenchContext(context, true, true);
     }
 }

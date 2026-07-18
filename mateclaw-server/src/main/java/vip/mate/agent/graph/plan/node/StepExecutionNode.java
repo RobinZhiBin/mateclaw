@@ -316,12 +316,12 @@ public class StepExecutionNode implements NodeAction {
                 // PTL 处理：压缩后重试
                 if (result.isPromptTooLong() && conversationWindowManager != null) {
                     log.warn("[StepExecution] Prompt too long at step {}, attempting compaction", stepIndex);
+                    int stablePrefixSize = TrustedWorkbenchContextInjector.stableSystemPrefixSize(messages);
                     List<Message> compactedMessages = conversationWindowManager.compactForRetry(
-                            messages.subList(1, messages.size()));
+                            messages.subList(stablePrefixSize, messages.size()));
                     if (compactedMessages != null) {
-                        List<Message> retryMessages = new ArrayList<>();
-                        retryMessages.add(messages.get(0));
-                        retryMessages.addAll(compactedMessages);
+                        List<Message> retryMessages = TrustedWorkbenchContextInjector
+                                .reattachStableSystemPrefix(messages, compactedMessages);
                         result = streamingHelper.streamCall(
                                 chatModel, new Prompt(retryMessages, options), conversationId,
                                 "step_execution_compact_retry[" + stepIndex + "]");

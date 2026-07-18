@@ -2,6 +2,8 @@ package vip.mate.channel.webchat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonSetter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -136,7 +138,10 @@ public class WebChatController {
                 return emitter;
             }
             try {
-                parsedTrustedContext = TrustedWorkbenchContext.parse(request.getTrustedWorkbenchContext());
+                request.validateServerOnlyWorkbenchFields();
+                if (request.hasTrustedWorkbenchContext()) {
+                    parsedTrustedContext = TrustedWorkbenchContext.parse(request.getTrustedWorkbenchContext());
+                }
             } catch (IllegalArgumentException ex) {
                 sendErrorAndComplete(emitter, ex.getMessage());
                 return emitter;
@@ -1972,8 +1977,14 @@ public class WebChatController {
         private String message;
         private String visitorId;
         private JsonNode trustedWorkbenchContext;
-        private Boolean memoryRecallEnabled;
-        private Boolean memoryLearningEnabled;
+        private JsonNode memoryRecallEnabled;
+        private JsonNode memoryLearningEnabled;
+        @JsonIgnore
+        private boolean trustedWorkbenchContextPresent;
+        @JsonIgnore
+        private boolean memoryRecallEnabledPresent;
+        @JsonIgnore
+        private boolean memoryLearningEnabledPresent;
         /** Optional: route this call to a specific agent instead of the channel's bound agent.
          *  Must belong to the channel's workspace.
          *  <p>Only applied when the (visitorId + sessionId) conversation is first created. Once that
@@ -1988,18 +1999,62 @@ public class WebChatController {
          *  ids are dropped. */
         private List<String> attachmentIds;
 
+        @JsonSetter("trustedWorkbenchContext")
+        public void setTrustedWorkbenchContext(JsonNode trustedWorkbenchContext) {
+            this.trustedWorkbenchContextPresent = true;
+            this.trustedWorkbenchContext = trustedWorkbenchContext;
+        }
+
+        @JsonSetter("memoryRecallEnabled")
+        public void setMemoryRecallEnabled(JsonNode memoryRecallEnabled) {
+            this.memoryRecallEnabledPresent = true;
+            this.memoryRecallEnabled = memoryRecallEnabled;
+        }
+
+        @JsonSetter("memoryLearningEnabled")
+        public void setMemoryLearningEnabled(JsonNode memoryLearningEnabled) {
+            this.memoryLearningEnabledPresent = true;
+            this.memoryLearningEnabled = memoryLearningEnabled;
+        }
+
         boolean hasServerOnlyWorkbenchFields() {
-            return trustedWorkbenchContext != null
-                    || memoryRecallEnabled != null
-                    || memoryLearningEnabled != null;
+            return trustedWorkbenchContextPresent
+                    || memoryRecallEnabledPresent
+                    || memoryLearningEnabledPresent;
+        }
+
+        boolean hasTrustedWorkbenchContext() {
+            return trustedWorkbenchContextPresent;
+        }
+
+        void validateServerOnlyWorkbenchFields() {
+            if (trustedWorkbenchContextPresent
+                    && (trustedWorkbenchContext == null
+                    || trustedWorkbenchContext.isNull()
+                    || !trustedWorkbenchContext.isObject())) {
+                throw new IllegalArgumentException("trustedWorkbenchContext must be an object");
+            }
+            validateBoolean(memoryRecallEnabled, memoryRecallEnabledPresent, "memoryRecallEnabled");
+            validateBoolean(memoryLearningEnabled, memoryLearningEnabledPresent, "memoryLearningEnabled");
         }
 
         boolean memoryRecallEnabled() {
-            return memoryRecallEnabled == null || memoryRecallEnabled;
+            return booleanValueOrDefault(memoryRecallEnabled, memoryRecallEnabledPresent, "memoryRecallEnabled");
         }
 
         boolean memoryLearningEnabled() {
-            return memoryLearningEnabled == null || memoryLearningEnabled;
+            return booleanValueOrDefault(memoryLearningEnabled, memoryLearningEnabledPresent, "memoryLearningEnabled");
+        }
+
+        private static boolean booleanValueOrDefault(JsonNode value, boolean present, String field) {
+            validateBoolean(value, present, field);
+            return !present || value.booleanValue();
+        }
+
+        private static void validateBoolean(JsonNode value, boolean present, String field) {
+            if (present && (value == null || !value.isBoolean())) {
+                throw new IllegalArgumentException(field + " must be a boolean");
+            }
         }
     }
 

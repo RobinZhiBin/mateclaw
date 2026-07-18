@@ -441,9 +441,6 @@ public class PlanGenerationNode implements NodeAction {
         }
 
         try {
-            // PLANNING_PROMPT is the sole system message; we deliberately do NOT
-            // concatenate the agent's full systemPrompt (wiki / skill / memory guidance),
-            // which would dilute the triage instructions.
             List<Message> promptMessages = new ArrayList<>();
             promptMessages.add(new SystemMessage(PLANNING_PROMPT));
             String workspaceBasePath = state.value(MateClawStateKeys.WORKSPACE_BASE_PATH, "");
@@ -519,12 +516,12 @@ public class PlanGenerationNode implements NodeAction {
             // Prompt-too-long handling: compact the conversation window and retry once.
             if (result.isPromptTooLong() && conversationWindowManager != null) {
                 log.warn("[PlanGeneration] Prompt too long, attempting compaction and retry");
+                int stablePrefixSize = TrustedWorkbenchContextInjector.stableSystemPrefixSize(promptMessages);
                 List<Message> compactedMessages = conversationWindowManager.compactForRetry(
-                        promptMessages.subList(1, promptMessages.size()));
+                        promptMessages.subList(stablePrefixSize, promptMessages.size()));
                 if (compactedMessages != null) {
-                    List<Message> retryMessages = new ArrayList<>();
-                    retryMessages.add(promptMessages.get(0));
-                    retryMessages.addAll(compactedMessages);
+                    List<Message> retryMessages = TrustedWorkbenchContextInjector
+                            .reattachStableSystemPrefix(promptMessages, compactedMessages);
                     result = streamingHelper.streamCallSilent(
                             chatModel, new Prompt(retryMessages), conversationId, "plan_generation_compact_retry");
                 }

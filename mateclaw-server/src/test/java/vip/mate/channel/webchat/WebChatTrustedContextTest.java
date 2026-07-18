@@ -1,6 +1,7 @@
 package vip.mate.channel.webchat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.BooleanNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -26,6 +27,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -144,8 +147,8 @@ class WebChatTrustedContextTest {
     void validWorkbenchServiceKeyCarriesTrustedContextAndMemorySwitchesOnOrigin(CapturedOutput output)
             throws Exception {
         WebChatController.WebChatRequest request = requestWithTrustedProfile();
-        request.setMemoryRecallEnabled(false);
-        request.setMemoryLearningEnabled(false);
+        request.setMemoryRecallEnabled(BooleanNode.FALSE);
+        request.setMemoryLearningEnabled(BooleanNode.FALSE);
         when(channelService.listChannelsByType("webchat")).thenReturn(List.of(channel()));
         when(agentService.getAgent(42L)).thenReturn(agent());
         when(conversationService.getOrCreateWebchatConversation(any(), eq(42L), any(), eq(1L), any()))
@@ -169,6 +172,44 @@ class WebChatTrustedContextTest {
         assertThat(captured.get().memoryRecallEnabled()).isFalse();
         assertThat(captured.get().memoryLearningEnabled()).isFalse();
         assertThat(output.getOut() + output.getErr()).doesNotContain("PMO");
+    }
+
+    @Test
+    void preservesPresenceAndRejectsCoercedOrNullServerOnlyFields() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+
+        for (String json : List.of(
+                "{\"message\":\"hello\",\"memoryRecallEnabled\":\"false\"}",
+                "{\"message\":\"hello\",\"memoryRecallEnabled\":0}",
+                "{\"message\":\"hello\",\"memoryLearningEnabled\":null}",
+                "{\"message\":\"hello\",\"trustedWorkbenchContext\":null}")) {
+            WebChatController.WebChatRequest request =
+                    mapper.readValue(json, WebChatController.WebChatRequest.class);
+            assertThat(request.hasServerOnlyWorkbenchFields()).as(json).isTrue();
+            assertThatThrownBy(request::validateServerOnlyWorkbenchFields)
+                    .as(json)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        WebChatController.WebChatRequest legacy =
+                mapper.readValue("{\"message\":\"hello\"}", WebChatController.WebChatRequest.class);
+        assertThat(legacy.hasServerOnlyWorkbenchFields()).isFalse();
+        assertThatCode(legacy::validateServerOnlyWorkbenchFields).doesNotThrowAnyException();
+        assertThat(legacy.memoryRecallEnabled()).isTrue();
+        assertThat(legacy.memoryLearningEnabled()).isTrue();
+    }
+
+    @Test
+    void rejectsInvalidServerOnlyFieldAtTheAuthenticatedControllerBoundary() throws Exception {
+        WebChatController.WebChatRequest request = new ObjectMapper().readValue(
+                "{\"message\":\"hello\",\"memoryRecallEnabled\":\"false\"}",
+                WebChatController.WebChatRequest.class);
+        when(channelService.listChannelsByType("webchat")).thenReturn(List.of(channel()));
+
+        controller.chatStream(API_KEY, SERVICE_KEY, request);
+
+        verify(agentService, never()).getAgent(any());
+        verify(agentService, never()).chatStructuredStream(any(), any(), any(), any(), any(), any());
     }
 
     private static WebChatController.WebChatRequest requestWithTrustedProfile() {
