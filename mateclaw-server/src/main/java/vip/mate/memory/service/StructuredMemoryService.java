@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import vip.mate.memory.event.MemoryWriteEvent;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
+import vip.mate.workbench.model.WorkbenchMemoryEntry;
 
 import java.time.LocalDate;
 import java.util.*;
@@ -230,6 +231,36 @@ public class StructuredMemoryService {
     /** Owner-scoped variant of {@link #listEntries(Long, String)}. */
     public List<Map<String, String>> listEntries(Long agentId, String type, String ownerKey) {
         return recall(agentId, type, null, ownerKey);
+    }
+
+    public List<WorkbenchMemoryEntry> listWorkbenchEntries(Long agentId, String ownerKey, List<String> types) {
+        List<String> safeTypes = types == null || types.isEmpty() ? List.copyOf(VALID_TYPES) : types;
+        List<WorkbenchMemoryEntry> entries = new ArrayList<>();
+        for (String type : safeTypes) {
+            validateType(type);
+            String fileContent = readFileSafe(agentId, toFilename(type), ownerKey);
+            if (fileContent.isBlank()) continue;
+            for (Map.Entry<String, String> section : parseSections(fileContent).entrySet()) {
+                entries.add(new WorkbenchMemoryEntry(
+                        type,
+                        section.getKey(),
+                        extractContentOnly(section.getValue()),
+                        extractSource(section.getValue()),
+                        extractUpdated(section.getValue())));
+            }
+        }
+        return entries;
+    }
+
+    public int clearWorkbenchEntries(Long agentId, String ownerKey, List<String> types) {
+        List<String> safeTypes = types == null || types.isEmpty() ? List.copyOf(VALID_TYPES) : types;
+        int cleared = 0;
+        for (String type : safeTypes) {
+            validateType(type);
+            workspaceFileService.deleteMemoryFile(agentId, toFilename(type), ownerKey);
+            cleared++;
+        }
+        return cleared;
     }
 
     /**
@@ -684,6 +715,16 @@ public class StructuredMemoryService {
     private String extractUpdated(String sectionBody) {
         Matcher m = UPDATED_RE.matcher(sectionBody);
         return m.find() ? m.group(1) : "";
+    }
+
+    private String extractSource(String sectionBody) {
+        for (String line : sectionBody.split("\n")) {
+            String trimmed = line.trim();
+            if (!trimmed.startsWith(">")) continue;
+            Matcher matcher = Pattern.compile("Source:\\s*([^|]+)").matcher(trimmed);
+            if (matcher.find()) return matcher.group(1).trim();
+        }
+        return "";
     }
 
     private String typeDisplayName(String type) {
