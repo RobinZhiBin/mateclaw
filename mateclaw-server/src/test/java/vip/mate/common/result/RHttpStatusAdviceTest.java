@@ -30,4 +30,17 @@ class RHttpStatusAdviceTest {
 
         assertEquals(500, servlet.getStatus());
     }
+
+    @Test
+    void zeroCodeContractEnvelopePreservesSuccessfulHttpStatus() {
+        RHttpStatusAdvice advice = new RHttpStatusAdvice();
+        MockHttpServletResponse servlet = new MockHttpServletResponse();
+        R<Object> envelope = new R<>();
+        envelope.setCode(0);
+
+        advice.beforeBodyWrite(envelope, null, MediaType.APPLICATION_JSON,
+                null, null, new ServletServerHttpResponse(servlet));
+
+        assertEquals(200, servlet.getStatus());
+    }
 }

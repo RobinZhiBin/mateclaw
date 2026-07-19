@@ -16,6 +16,8 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
 @ControllerAdvice
 public class RHttpStatusAdvice implements ResponseBodyAdvice<Object> {
 
+    private static final int CONTRACT_SUCCESS_CODE = 0;
+
     @Override
     public boolean supports(MethodParameter returnType,
                             Class<? extends HttpMessageConverter<?>> converterType) {
@@ -29,7 +31,9 @@ public class RHttpStatusAdvice implements ResponseBodyAdvice<Object> {
                                   Class<? extends HttpMessageConverter<?>> selectedConverterType,
                                   ServerHttpRequest request,
                                   ServerHttpResponse response) {
-        if (body instanceof R<?> envelope && envelope.getCode() != ResultCode.SUCCESS.getCode()) {
+        if (body instanceof R<?> envelope
+                && envelope.getCode() != CONTRACT_SUCCESS_CODE
+                && envelope.getCode() != ResultCode.SUCCESS.getCode()) {
             HttpStatus status = HttpStatus.resolve(envelope.getCode());
             if (status == null) status = HttpStatus.INTERNAL_SERVER_ERROR;
             if (response instanceof ServletServerHttpResponse servletResponse
