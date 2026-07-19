@@ -1,6 +1,6 @@
 package vip.mate.workbench;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,9 +36,13 @@ public class WorkbenchMemoryController {
 
         Long workspaceId = positiveLong(workspaceHeader);
         if (workspaceId == null) return error(403, "Forbidden", "WORKBENCH_AGENT_FORBIDDEN");
-        return memoryService.list(agentId, workspaceId, visitorId)
-                .<ResponseEntity<R<?>>>map(WorkbenchMemoryController::success)
-                .orElseGet(() -> error(404, "Not found", "WORKBENCH_AGENT_NOT_FOUND"));
+        try {
+            return memoryService.list(agentId, workspaceId, visitorId)
+                    .<ResponseEntity<R<?>>>map(WorkbenchMemoryController::success)
+                    .orElseGet(() -> error(404, "Not found", "WORKBENCH_AGENT_NOT_FOUND"));
+        } catch (IllegalArgumentException e) {
+            return error(400, "Bad request", "WORKBENCH_MEMORY_BAD_REQUEST");
+        }
     }
 
     @PutMapping("/{type}/{key}")
@@ -49,14 +53,14 @@ public class WorkbenchMemoryController {
             @PathVariable String key,
             @RequestHeader(value = "X-Workbench-Service-Key", required = false) String serviceKey,
             @RequestHeader(value = "X-Workspace-Id", required = false) String workspaceHeader,
-            @RequestBody MemoryUpsertRequest request) {
+            @RequestBody JsonNode request) {
         ResponseEntity<R<?>> authFailure = authFailure(serviceKey);
         if (authFailure != null) return authFailure;
 
         Long workspaceId = positiveLong(workspaceHeader);
         if (workspaceId == null) return error(403, "Forbidden", "WORKBENCH_AGENT_FORBIDDEN");
         try {
-            return memoryService.remember(agentId, workspaceId, visitorId, type, key, request.effectiveContent())
+            return memoryService.remember(agentId, workspaceId, visitorId, type, key, requestContent(request))
                     .<ResponseEntity<R<?>>>map(WorkbenchMemoryController::success)
                     .orElseGet(() -> error(404, "Not found", "WORKBENCH_AGENT_NOT_FOUND"));
         } catch (IllegalArgumentException e) {
@@ -97,9 +101,13 @@ public class WorkbenchMemoryController {
 
         Long workspaceId = positiveLong(workspaceHeader);
         if (workspaceId == null) return error(403, "Forbidden", "WORKBENCH_AGENT_FORBIDDEN");
-        return memoryService.clear(agentId, workspaceId, visitorId)
-                .<ResponseEntity<R<?>>>map(clearedTypes -> success(new ClearResult(clearedTypes)))
-                .orElseGet(() -> error(404, "Not found", "WORKBENCH_AGENT_NOT_FOUND"));
+        try {
+            return memoryService.clear(agentId, workspaceId, visitorId)
+                    .<ResponseEntity<R<?>>>map(clearedTypes -> success(new ClearResult(clearedTypes)))
+                    .orElseGet(() -> error(404, "Not found", "WORKBENCH_AGENT_NOT_FOUND"));
+        } catch (IllegalArgumentException e) {
+            return error(400, "Bad request", "WORKBENCH_MEMORY_BAD_REQUEST");
+        }
     }
 
     private ResponseEntity<R<?>> authFailure(String serviceKey) {
@@ -142,11 +150,15 @@ public class WorkbenchMemoryController {
         return ResponseEntity.ok(body);
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public record MemoryUpsertRequest(String content, String value) {
-        String effectiveContent() {
-            return content != null ? content : value;
+    private static String requestContent(JsonNode request) {
+        if (request == null
+                || !request.isObject()
+                || request.size() != 1
+                || !request.has("content")
+                || !request.get("content").isTextual()) {
+            throw new IllegalArgumentException("request must contain only a textual content field");
         }
+        return request.get("content").textValue();
     }
 
     public record DeleteResult(boolean deleted) {}

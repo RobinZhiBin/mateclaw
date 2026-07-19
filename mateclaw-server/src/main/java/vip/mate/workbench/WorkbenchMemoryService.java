@@ -9,12 +9,17 @@ import vip.mate.workbench.model.WorkbenchMemoryEntry;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 @Service
 public class WorkbenchMemoryService {
 
     public static final List<String> ALLOWED_TYPES = List.of("user", "feedback", "project", "reference");
     static final String CONFIRMED_SOURCE = "workbench-user-confirmed";
+    private static final Pattern VISITOR_ID_PATTERN = Pattern.compile("[A-Za-z0-9._:-]{1,124}");
+    private static final Pattern KEY_PATTERN = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
+    private static final Pattern MARKDOWN_CONTROL_LINE = Pattern.compile(
+            "(?m)^\\s*(?:##\\s+|>\\s*Source\\s*:)", Pattern.CASE_INSENSITIVE);
 
     private final AgentMapper agentMapper;
     private final StructuredMemoryService structuredMemoryService;
@@ -34,6 +39,7 @@ public class WorkbenchMemoryService {
             Long agentId, Long workspaceId, String visitorId, String type, String key, String content) {
         if (!authorized(agentId, workspaceId)) return Optional.empty();
         validateType(type);
+        validateKey(key);
         String trimmed = requireContent(content);
         structuredMemoryService.remember(agentId, type, key, trimmed, CONFIRMED_SOURCE, ownerKey(visitorId));
         return Optional.of(new WorkbenchMemoryEntry(type, key, trimmed, CONFIRMED_SOURCE, null));
@@ -42,6 +48,7 @@ public class WorkbenchMemoryService {
     public Optional<Boolean> forget(Long agentId, Long workspaceId, String visitorId, String type, String key) {
         if (!authorized(agentId, workspaceId)) return Optional.empty();
         validateType(type);
+        validateKey(key);
         return Optional.of(structuredMemoryService.forget(agentId, type, key, ownerKey(visitorId)));
     }
 
@@ -52,10 +59,11 @@ public class WorkbenchMemoryService {
     }
 
     static String ownerKey(String visitorId) {
-        if (visitorId == null || visitorId.isBlank()) {
-            throw new IllegalArgumentException("visitorId is required");
+        String normalized = visitorId == null ? "" : visitorId.trim();
+        if (!VISITOR_ID_PATTERN.matcher(normalized).matches()) {
+            throw new IllegalArgumentException("visitorId must be 1-124 safe identifier characters");
         }
-        return "api:" + visitorId.trim();
+        return "api:" + normalized;
     }
 
     private boolean authorized(Long agentId, Long workspaceId) {
@@ -72,10 +80,20 @@ public class WorkbenchMemoryService {
         }
     }
 
+    private static void validateKey(String key) {
+        if (key == null || !KEY_PATTERN.matcher(key).matches()) {
+            throw new IllegalArgumentException("Invalid memory key");
+        }
+    }
+
     private static String requireContent(String content) {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("content is required");
         }
-        return content.trim();
+        String trimmed = content.trim();
+        if (MARKDOWN_CONTROL_LINE.matcher(trimmed).find()) {
+            throw new IllegalArgumentException("content contains reserved Markdown control lines");
+        }
+        return trimmed;
     }
 }

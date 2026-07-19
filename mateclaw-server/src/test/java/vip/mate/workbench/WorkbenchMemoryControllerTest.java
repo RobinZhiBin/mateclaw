@@ -75,14 +75,14 @@ class WorkbenchMemoryControllerTest {
     }
 
     @Test
-    void putDerivesOwnerKeyFromVisitorAndIgnoresRawOwnerKeyInBody() throws Exception {
+    void putDerivesOwnerKeyFromVisitor() throws Exception {
         when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
 
         mockMvc.perform(put(path() + "/user/reply_style")
                         .header("X-Workbench-Service-Key", "dedicated-secret")
                         .header("X-Workspace-Id", "1")
                         .contentType("application/json")
-                        .content("{\"content\":\"Use concise Chinese.\",\"ownerKey\":\"api:attacker\"}"))
+                        .content("{\"content\":\"Use concise Chinese.\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.type").value("user"))
                 .andExpect(jsonPath("$.data.key").value("reply_style"))
@@ -93,6 +93,34 @@ class WorkbenchMemoryControllerTest {
         verify(structuredMemoryService).remember(eq(7L), eq("user"), eq("reply_style"),
                 eq("Use concise Chinese."), eq("workbench-user-confirmed"), owner.capture());
         assertThat(owner.getValue()).isEqualTo("api:visitor-a");
+    }
+
+    @Test
+    void putRejectsRawOwnerKeyInsteadOfSilentlyAcceptingIt() throws Exception {
+        mockMvc.perform(put(path() + "/user/reply_style")
+                        .header("X-Workbench-Service-Key", "dedicated-secret")
+                        .header("X-Workspace-Id", "1")
+                        .contentType("application/json")
+                        .content("{\"content\":\"Use concise Chinese.\",\"ownerKey\":\"api:attacker\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.errorCode").value("WORKBENCH_MEMORY_BAD_REQUEST"));
+
+        verify(structuredMemoryService, never()).remember(
+                eq(7L), eq("user"), eq("reply_style"), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void listRejectsVisitorIdsThatCannotFitTheOwnerKeyBoundary() throws Exception {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L));
+        String visitorId = "v".repeat(125);
+
+        mockMvc.perform(get("/api/v1/workbench/agents/7/visitors/" + visitorId + "/memories")
+                        .header("X-Workbench-Service-Key", "dedicated-secret")
+                        .header("X-Workspace-Id", "1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.errorCode").value("WORKBENCH_MEMORY_BAD_REQUEST"));
+
+        verify(structuredMemoryService, never()).listWorkbenchEntries(eq(7L), anyString(), anyList());
     }
 
     @Test

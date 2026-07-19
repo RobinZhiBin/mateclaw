@@ -67,8 +67,8 @@ public class StructuredMemoryService {
     /** Latin word tokens of length >= 2 used for relevance shingling. */
     private static final Pattern WORD_RE = Pattern.compile("[a-z0-9]{2,}");
 
-    /** Captures the ISO update date from an entry's metadata line ("> ... | Updated: YYYY-MM-DD"). */
-    private static final Pattern UPDATED_RE = Pattern.compile("Updated:\\s*(\\d{4}-\\d{2}-\\d{2})");
+    private static final Pattern METADATA_RE = Pattern.compile(
+            "^>\\s*Source:\\s*([^|\\r\\n]+?)\\s*\\|\\s*Updated:\\s*(\\d{4}-\\d{2}-\\d{2})$");
 
     /**
      * Domain aliases bridging natural-language question terms to entry keys/types.
@@ -123,8 +123,7 @@ public class StructuredMemoryService {
     public void remember(Long agentId, String type, String key, String content, String source, String ownerKey) {
         validateType(type);
         String filename = toFilename(type);
-        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
-        ReentrantLock lock = fileLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
+        ReentrantLock lock = fileLock(agentId, ownerKey, filename);
         lock.lock();
         try {
             String fileContent = readFileSafe(agentId, filename, ownerKey);
@@ -200,8 +199,7 @@ public class StructuredMemoryService {
     public boolean forget(Long agentId, String type, String key, String ownerKey) {
         validateType(type);
         String filename = toFilename(type);
-        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
-        ReentrantLock lock = fileLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
+        ReentrantLock lock = fileLock(agentId, ownerKey, filename);
         lock.lock();
         try {
             String fileContent = readFileSafe(agentId, filename, ownerKey);
@@ -254,13 +252,26 @@ public class StructuredMemoryService {
 
     public int clearWorkbenchEntries(Long agentId, String ownerKey, List<String> types) {
         List<String> safeTypes = types == null || types.isEmpty() ? List.copyOf(VALID_TYPES) : types;
-        int cleared = 0;
-        for (String type : safeTypes) {
-            validateType(type);
-            workspaceFileService.deleteMemoryFile(agentId, toFilename(type), ownerKey);
-            cleared++;
+        List<String> filenames = safeTypes.stream()
+                .peek(this::validateType)
+                .map(this::toFilename)
+                .distinct()
+                .sorted()
+                .toList();
+        List<ReentrantLock> locks = filenames.stream()
+                .map(filename -> fileLock(agentId, ownerKey, filename))
+                .toList();
+        locks.forEach(ReentrantLock::lock);
+        try {
+            for (String filename : filenames) {
+                workspaceFileService.deleteMemoryFile(agentId, filename, ownerKey);
+            }
+            return filenames.size();
+        } finally {
+            for (int i = locks.size() - 1; i >= 0; i--) {
+                locks.get(i).unlock();
+            }
         }
-        return cleared;
     }
 
     /**
@@ -583,8 +594,7 @@ public class StructuredMemoryService {
                                    LinkedHashMap<String, String> entries, String source) {
         validateType(type);
         String filename = toFilename(type);
-        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
-        ReentrantLock lock = fileLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
+        ReentrantLock lock = fileLock(agentId, ownerKey, filename);
         lock.lock();
         try {
             // Derive prior update dates so consolidation preserves provenance.
@@ -687,14 +697,14 @@ public class StructuredMemoryService {
      * Find a complete section by key (header + body), or null if not found.
      */
     private String findSection(String content, String key) {
-        String header = "## " + key;
-        int idx = content.indexOf(header);
-        if (idx < 0) return null;
-
-        // Find the end: next ## header or EOF
-        int nextSection = content.indexOf("\n## ", idx + header.length());
-        int end = nextSection >= 0 ? nextSection : content.length();
-        return content.substring(idx, end).trim();
+        Matcher matcher = SECTION_PATTERN.matcher(content);
+        while (matcher.find()) {
+            if (!matcher.group(1).trim().equals(key)) continue;
+            int start = matcher.start();
+            int end = matcher.find() ? matcher.start() : content.length();
+            return content.substring(start, end).trim();
+        }
+        return null;
     }
 
     /**
@@ -713,19 +723,32 @@ public class StructuredMemoryService {
 
     /** Extract the ISO update date from an entry body's metadata line, or "" if absent. */
     private String extractUpdated(String sectionBody) {
-        Matcher m = UPDATED_RE.matcher(sectionBody);
-        return m.find() ? m.group(1) : "";
+        Metadata metadata = trailingMetadata(sectionBody);
+        return metadata == null ? "" : metadata.updatedAt();
     }
 
     private String extractSource(String sectionBody) {
-        for (String line : sectionBody.split("\n")) {
-            String trimmed = line.trim();
-            if (!trimmed.startsWith(">")) continue;
-            Matcher matcher = Pattern.compile("Source:\\s*([^|]+)").matcher(trimmed);
-            if (matcher.find()) return matcher.group(1).trim();
-        }
-        return "";
+        Metadata metadata = trailingMetadata(sectionBody);
+        return metadata == null ? "" : metadata.source();
     }
+
+    private Metadata trailingMetadata(String sectionBody) {
+        String[] lines = sectionBody.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            if (line.isBlank()) continue;
+            Matcher matcher = METADATA_RE.matcher(line);
+            return matcher.matches() ? new Metadata(matcher.group(1).trim(), matcher.group(2)) : null;
+        }
+        return null;
+    }
+
+    private ReentrantLock fileLock(Long agentId, String ownerKey, String filename) {
+        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
+        return fileLocks.computeIfAbsent(lockKey, ignored -> new ReentrantLock());
+    }
+
+    private record Metadata(String source, String updatedAt) {}
 
     private String typeDisplayName(String type) {
         return switch (type) {
